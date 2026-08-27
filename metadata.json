@@ -1,0 +1,6 @@
+{
+  "name": "RetroViz Studio",
+  "description": "Audio visualization studio featuring real-time 3D Three.js universe, Winamp Milkdrop (Butterchurn) engine, WaveSurfer drop inspector, and video exporter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
