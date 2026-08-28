@@ -3,8 +3,9 @@ import {
   Play, Pause, Upload, Settings, Monitor, Film, Download, FileAudio, 
   Sparkles, Compass, RotateCcw, Shuffle, ChevronRight, ChevronLeft, Box,
   Layers, Volume2, Maximize2, Repeat, Sliders, Palette, Zap, Radio,
-  Activity, HelpCircle, X, Contrast, GitBranch
+  Activity, HelpCircle, X, Contrast, GitBranch, FolderArchive, Image as ImageIcon, FileArchive
 } from 'lucide-react';
+import JSZip from 'jszip';
 import { i18n, Language } from './i18n';
 import { visualizers } from './visualizers';
 import { 
@@ -107,6 +108,11 @@ export default function App() {
   const [exportFps, setExportFps] = useState<number>(30);
   const [exportFormat, setExportFormat] = useState<'webm' | 'mp4'>('webm');
   const [exportPassMode, setExportPassMode] = useState<'color' | 'bw_matte' | 'both'>('color');
+  const [exportTarget, setExportTarget] = useState<'video' | 'frames' | 'both'>('both');
+  const [framesFormat, setFramesFormat] = useState<'png' | 'jpeg'>('png');
+  const [capturedFramesCount, setCapturedFramesCount] = useState<number>(0);
+  const [isCompressingZip, setIsCompressingZip] = useState<boolean>(false);
+  const [zipProgress, setZipProgress] = useState<number>(0);
   const [previewBW, setPreviewBW] = useState<boolean>(false);
   const [hideStageBackground, setHideStageBackground] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -147,6 +153,16 @@ export default function App() {
   const mediaRecorderColorRef = useRef<MediaRecorder | null>(null);
   const mediaRecorderBWRef = useRef<MediaRecorder | null>(null);
 
+  // Frame Sequence Refs
+  const framesListRef = useRef<{ path: string; blob: Blob }[]>([]);
+  const nextFrameCaptureTimeRef = useRef<number>(0);
+  const frameSequenceIndexRef = useRef<number>(1);
+  const exportTargetRef = useRef(exportTarget);
+  const framesFormatRef = useRef(framesFormat);
+  const exportFpsRef = useRef(exportFps);
+  const exportResRef = useRef(exportRes);
+  const exportArRef = useRef(exportAr);
+
   const activeStyleIdRef = useRef(activeStyleId);
   const isDualLayerEnabledRef = useRef(isDualLayerEnabled);
   const layer1IdRef = useRef(layer1Id);
@@ -176,6 +192,11 @@ export default function App() {
   useEffect(() => { exportPassModeRef.current = exportPassMode; }, [exportPassMode]);
   useEffect(() => { previewBWRef.current = previewBW; }, [previewBW]);
   useEffect(() => { hideStageBackgroundRef.current = hideStageBackground; }, [hideStageBackground]);
+  useEffect(() => { exportTargetRef.current = exportTarget; }, [exportTarget]);
+  useEffect(() => { framesFormatRef.current = framesFormat; }, [framesFormat]);
+  useEffect(() => { exportFpsRef.current = exportFps; }, [exportFps]);
+  useEffect(() => { exportResRef.current = exportRes; }, [exportRes]);
+  useEffect(() => { exportArRef.current = exportAr; }, [exportAr]);
 
   const effectiveBaseItem = isDualLayerEnabled
     ? (allUnifiedVisualizers.find(v => v.id === layer1Id) || allUnifiedVisualizers[0])
@@ -434,6 +455,51 @@ export default function App() {
               bwCtx.restore();
             }
           }
+
+          // 6. Real-time Frame Sampling (for Image Sequence ZIP Export)
+          if (isExportingRef.current && (exportTargetRef.current === 'frames' || exportTargetRef.current === 'both')) {
+            if (audioRef.current) {
+              const audioCurTime = audioRef.current.currentTime;
+              if (audioCurTime >= nextFrameCaptureTimeRef.current) {
+                const compC = canvasExportCompositeRef.current;
+                const bwC = canvasExportBWRef.current;
+                const fNum = frameSequenceIndexRef.current++;
+                const fmt = framesFormatRef.current;
+                const mime = fmt === 'png' ? 'image/png' : 'image/jpeg';
+                const ext = fmt === 'png' ? 'png' : 'jpg';
+                const frameFileName = `frame_${String(fNum).padStart(5, '0')}.${ext}`;
+                const mode = exportPassModeRef.current;
+                const shouldColor = mode === 'color' || mode === 'both';
+                const shouldBW = mode === 'bw_matte' || mode === 'both';
+
+                if (shouldColor && compC) {
+                  compC.toBlob((blob) => {
+                    if (blob) {
+                      framesListRef.current.push({
+                        path: mode === 'both' ? `frames_color/${frameFileName}` : `frames/${frameFileName}`,
+                        blob
+                      });
+                      setCapturedFramesCount(framesListRef.current.length);
+                    }
+                  }, mime, 0.95);
+                }
+
+                if (shouldBW && bwC) {
+                  bwC.toBlob((blob) => {
+                    if (blob) {
+                      framesListRef.current.push({
+                        path: mode === 'both' ? `frames_bw_matte/${frameFileName}` : `frames/${frameFileName}`,
+                        blob
+                      });
+                      setCapturedFramesCount(framesListRef.current.length);
+                    }
+                  }, mime, 0.95);
+                }
+
+                nextFrameCaptureTimeRef.current += (1 / exportFpsRef.current);
+              }
+            }
+          }
         }
       }
     }
@@ -568,13 +634,82 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [togglePlay, activeItem.engine]);
 
-  // Video Export (Supports 12 FPS, 24 FPS, 30 FPS, 60 FPS, Color & Pure B&W Matte Pass)
+  // Finalize export (Video and/or Frames ZIP)
+  const finalizeExport = async (timestamp: number) => {
+    const shouldExportFrames = exportTargetRef.current === 'frames' || exportTargetRef.current === 'both';
+    
+    if (shouldExportFrames && framesListRef.current.length > 0) {
+      setIsCompressingZip(true);
+      try {
+        const zip = new JSZip();
+        const compCanvas = canvasExportCompositeRef.current;
+        const w = compCanvas ? compCanvas.width : 1920;
+        const h = compCanvas ? compCanvas.height : 1080;
+        
+        framesListRef.current.forEach(item => {
+          zip.file(item.path, item.blob);
+        });
+
+        // Sequence metadata info file
+        const infoTxt = `RetroViz Studio - Image Sequence Export
+======================================================
+Visualizer: ${activeItem.nameEn} (${activeItem.id})
+Audio Track: ${audioFile ? audioFile.name : 'Demo Track'}
+Resolution: ${exportResRef.current} (${w}x${h})
+Aspect Ratio: ${exportArRef.current}
+Frame Rate: ${exportFpsRef.current} FPS
+Frame Image Format: ${framesFormatRef.current.toUpperCase()}
+Total Captured Frames: ${framesListRef.current.length}
+Color Mode: ${exportPassModeRef.current}
+Timestamp: ${new Date().toISOString()}
+
+Folders included in this ZIP:
+${exportPassModeRef.current === 'both' 
+  ? '- /frames_color/ : Full color frames sequence\n- /frames_bw_matte/ : Pure B&W Matte mask frames sequence' 
+  : '- /frames/ : Image sequence frames'}
+======================================================
+`;
+        zip.file('README_FRAMES_INFO.txt', infoTxt);
+
+        const zipBlob = await zip.generateAsync(
+          { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 4 } },
+          (meta) => {
+            setZipProgress(Math.round(meta.percent));
+          }
+        );
+
+        const zipUrl = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        a.href = zipUrl;
+        a.download = `RetroViz_${activeItem.id}_Frames_${exportFpsRef.current}fps_${timestamp}.zip`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(zipUrl), 3000);
+      } catch (err) {
+        console.error('Error generating frames zip:', err);
+      } finally {
+        setIsCompressingZip(false);
+      }
+    }
+
+    setIsExporting(false);
+    setIsPlaying(false);
+    if (audioRef.current) audioRef.current.pause();
+  };
+
+  // Video & Frames Export (Supports 12 FPS, 24 FPS, 30 FPS, 60 FPS, Video + Frames ZIP folder, Color & Pure B&W Matte Pass)
   const startExport = async () => {
     if (!audioRef.current) return;
     
     const compCanvas = canvasExportCompositeRef.current;
     const bwCanvas = canvasExportBWRef.current;
     if (!compCanvas || !bwCanvas) return;
+
+    framesListRef.current = [];
+    frameSequenceIndexRef.current = 1;
+    nextFrameCaptureTimeRef.current = 0;
+    setCapturedFramesCount(0);
+    setZipProgress(0);
+    setIsCompressingZip(false);
 
     setIsExporting(true);
     setIsPlaying(true);
@@ -604,7 +739,7 @@ export default function App() {
     const ext = finalOptions.mimeType.includes('mp4') ? 'mp4' : 'webm';
     const timestamp = Date.now();
 
-    const handleDownload = (blob: Blob, suffix: string) => {
+    const handleDownloadVideo = (blob: Blob, suffix: string) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -614,20 +749,21 @@ export default function App() {
     };
 
     const mode = exportPassModeRef.current;
-    const shouldExportColor = mode === 'color' || mode === 'both';
-    const shouldExportBW = mode === 'bw_matte' || mode === 'both';
+    const target = exportTargetRef.current;
+    const shouldExportVideo = target === 'video' || target === 'both';
+    const shouldExportColor = shouldExportVideo && (mode === 'color' || mode === 'both');
+    const shouldExportBW = shouldExportVideo && (mode === 'bw_matte' || mode === 'both');
 
     let finishedCount = 0;
-    const totalRecorders = mode === 'both' ? 2 : 1;
+    const totalRecorders = shouldExportVideo ? (mode === 'both' ? 2 : 1) : 0;
 
     const checkAllFinished = () => {
       finishedCount++;
       if (finishedCount >= totalRecorders) {
-        setIsExporting(false);
-        setIsPlaying(false);
         if (analyser) {
           try { analyser.disconnect(dest); } catch(e) {}
         }
+        finalizeExport(timestamp);
       }
     };
 
@@ -645,13 +781,13 @@ export default function App() {
       };
       recColor.onstop = () => {
         const blob = new Blob(chunksColor, { type: finalOptions.mimeType });
-        handleDownload(blob, mode === 'both' ? 'Color' : 'Video');
+        handleDownloadVideo(blob, mode === 'both' ? 'Color' : 'Video');
         checkAllFinished();
       };
       recColor.start();
     }
 
-    // 2. Pure B&W Matte Pass (Pure white elements on pitch black 0x000000 background)
+    // 2. Pure B&W Matte Pass
     if (shouldExportBW) {
       const streamBW = bwCanvas.captureStream(exportFps);
       if (audioTrack) {
@@ -665,7 +801,7 @@ export default function App() {
       };
       recBW.onstop = () => {
         const blob = new Blob(chunksBW, { type: finalOptions.mimeType });
-        handleDownload(blob, 'BW_Matte');
+        handleDownloadVideo(blob, 'BW_Matte');
         checkAllFinished();
       };
       recBW.start();
@@ -679,11 +815,20 @@ export default function App() {
     if (isExportingRef.current) {
       if (audioRef.current) audioRef.current.pause();
       setIsPlaying(false);
+      const shouldExportVideo = exportTargetRef.current === 'video' || exportTargetRef.current === 'both';
+      let hasRunningRecorder = false;
+
       if (mediaRecorderColorRef.current && mediaRecorderColorRef.current.state !== 'inactive') {
         mediaRecorderColorRef.current.stop();
+        hasRunningRecorder = true;
       }
       if (mediaRecorderBWRef.current && mediaRecorderBWRef.current.state !== 'inactive') {
         mediaRecorderBWRef.current.stop();
+        hasRunningRecorder = true;
+      }
+
+      if (!hasRunningRecorder || !shouldExportVideo) {
+        finalizeExport(Date.now());
       }
     }
   };
@@ -691,11 +836,20 @@ export default function App() {
   const handleAudioEnded = () => {
     if (isExportingRef.current) {
       setIsPlaying(false);
+      const shouldExportVideo = exportTargetRef.current === 'video' || exportTargetRef.current === 'both';
+      let hasRunningRecorder = false;
+
       if (mediaRecorderColorRef.current && mediaRecorderColorRef.current.state !== 'inactive') {
         mediaRecorderColorRef.current.stop();
+        hasRunningRecorder = true;
       }
       if (mediaRecorderBWRef.current && mediaRecorderBWRef.current.state !== 'inactive') {
         mediaRecorderBWRef.current.stop();
+        hasRunningRecorder = true;
+      }
+
+      if (!hasRunningRecorder || !shouldExportVideo) {
+        finalizeExport(Date.now());
       }
     } else if (isLoopingRef.current && audioRef.current) {
       audioRef.current.currentTime = 0;
@@ -1219,29 +1373,69 @@ export default function App() {
 
             {/* Exporting Overlay */}
             {isExporting && (
-              <div className="absolute inset-0 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center z-30 p-8 text-center">
+              <div className="absolute inset-0 bg-black/92 backdrop-blur-md flex flex-col items-center justify-center z-30 p-8 text-center">
                 <div className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-indigo-400 to-fuchsia-500 mb-2 animate-pulse tracking-widest uppercase">
-                  {exportPassMode === 'both' 
-                    ? (lang === 'he' ? 'מייצא 2 עותקים (צבע + שחור-לבן)...' : 'Exporting Dual (Color + B&W Copy)...')
+                  {isCompressingZip 
+                    ? (lang === 'he' ? 'דוחס ואורז תיקיית פרמים ל-ZIP...' : 'Packaging & Compressing Frames ZIP...')
+                    : exportTarget === 'both'
+                    ? (lang === 'he' ? 'מייצא וידיאו + רצף פרמים (ZIP)...' : 'Exporting Video + Frame Sequence (ZIP)...')
+                    : exportTarget === 'frames'
+                    ? (lang === 'he' ? 'מצלם ושומר פרמים (ZIP)...' : 'Capturing Frame Sequence...')
+                    : exportPassMode === 'both' 
+                    ? (lang === 'he' ? 'מייצא 2 עותקי וידיאו (צבע + שחור-לבן)...' : 'Exporting Dual Video (Color + B&W)...')
                     : exportPassMode === 'bw_matte'
-                    ? (lang === 'he' ? 'מייצא עותק שחור-לבן ל-VJ...' : 'Exporting B&W Matte...')
+                    ? (lang === 'he' ? 'מייצא וידיאו שחור-לבן ל-VJ...' : 'Exporting B&W Matte Video...')
                     : t.exporting}
                 </div>
-                <div className="text-xs text-gray-400 font-mono mb-6">
-                  {exportFps} FPS • {exportRes} • {exportAr}
+                
+                <div className="text-xs text-gray-400 font-mono mb-6 flex items-center gap-3">
+                  <span>{exportFps} FPS</span>
+                  <span>•</span>
+                  <span>{exportRes}</span>
+                  <span>•</span>
+                  <span>{exportAr}</span>
+                  {(exportTarget === 'frames' || exportTarget === 'both') && (
+                    <>
+                      <span>•</span>
+                      <span className="text-cyan-300 font-bold">{capturedFramesCount} {lang === 'he' ? 'פרמים נלכדו' : 'frames'}</span>
+                    </>
+                  )}
                 </div>
-                <div className="w-full max-w-md h-2 bg-white/5 rounded-full overflow-hidden border border-white/10 relative">
-                  <div 
-                    className="absolute h-full bg-gradient-to-r from-cyan-500 to-indigo-500 rounded-full transition-all duration-300" 
-                    style={{ width: `${(currentTime / (duration || 1)) * 100 || 0}%` }} 
-                  />
-                </div>
-                <div className="mt-4 text-cyan-400 font-mono text-sm">{Math.round((currentTime / (duration || 1)) * 100 || 0)}%</div>
+
+                {isCompressingZip ? (
+                  <div className="w-full max-w-md space-y-2">
+                    <div className="flex items-center justify-between text-xs text-indigo-300 font-mono">
+                      <span className="flex items-center gap-1.5"><FolderArchive size={14} /> ZIP Archive</span>
+                      <span>{zipProgress}%</span>
+                    </div>
+                    <div className="w-full h-2.5 bg-white/5 rounded-full overflow-hidden border border-indigo-500/30 relative">
+                      <div 
+                        className="absolute h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-400 rounded-full transition-all duration-150" 
+                        style={{ width: `${zipProgress}%` }} 
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="w-full max-w-md h-2.5 bg-white/5 rounded-full overflow-hidden border border-white/10 relative">
+                      <div 
+                        className="absolute h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 rounded-full transition-all duration-200" 
+                        style={{ width: `${(currentTime / (duration || 1)) * 100 || 0}%` }} 
+                      />
+                    </div>
+                    <div className="mt-3 flex items-center justify-between w-full max-w-md text-xs font-mono">
+                      <span className="text-gray-400">{formatTime(currentTime)} / {formatTime(duration)}</span>
+                      <span className="text-cyan-400 font-bold">{Math.round((currentTime / (duration || 1)) * 100 || 0)}%</span>
+                    </div>
+                  </>
+                )}
+
                 <button
                   onClick={stopExportManually}
-                  className="mt-6 px-5 py-2 rounded-lg bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 text-xs font-bold transition-colors"
+                  className="mt-6 px-5 py-2.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 text-xs font-bold transition-colors flex items-center gap-2"
                 >
-                  {lang === 'he' ? 'בטל / עצור ייצוא עכשיו' : 'Stop / Save Export Now'}
+                  <X size={14} />
+                  <span>{lang === 'he' ? 'עצור ושמור תוצרים עכשיו' : 'Stop & Save Export Now'}</span>
                 </button>
               </div>
             )}
@@ -1311,6 +1505,114 @@ export default function App() {
         <aside className="w-72 lg:w-80 border-s border-white/5 flex flex-col bg-[#121214] shrink-0">
           <div className="p-6 flex flex-col gap-6 h-full overflow-y-auto custom-scrollbar">
             
+            {/* Export Target (Video / Frames / Both) */}
+            <div>
+              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block flex items-center gap-1.5">
+                <FolderArchive size={13} className="text-cyan-400" />
+                <span>{t.exportTarget}</span>
+              </label>
+              
+              <div className="flex flex-col gap-1.5">
+                <button
+                  onClick={() => setExportTarget('both')}
+                  disabled={isExporting}
+                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                    exportTarget === 'both' 
+                      ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border-cyan-500/50 text-cyan-200' 
+                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <Film size={13} />
+                      <span>+</span>
+                      <FolderArchive size={13} />
+                      <span>{t.targetBoth}</span>
+                    </div>
+                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'מייצא קובץ וידיאו וגם תיקיית ZIP מלאה בכל הפרמים' : 'Exports video file AND a ZIP folder with every frame'}</div>
+                  </div>
+                  {exportTarget === 'both' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                </button>
+
+                <button
+                  onClick={() => setExportTarget('video')}
+                  disabled={isExporting}
+                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                    exportTarget === 'video' 
+                      ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' 
+                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <Film size={13} />
+                      <span>{t.targetVideoOnly}</span>
+                    </div>
+                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'קובץ וידיאו MP4 / WebM' : 'Video file only'}</div>
+                  </div>
+                  {exportTarget === 'video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                </button>
+
+                <button
+                  onClick={() => setExportTarget('frames')}
+                  disabled={isExporting}
+                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                    exportTarget === 'frames' 
+                      ? 'bg-indigo-500/25 border-indigo-500/60 text-indigo-200' 
+                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <FolderArchive size={13} />
+                      <span>{t.targetFramesOnly}</span>
+                    </div>
+                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'תיקיית ZIP של כל התמונות בדידים' : 'ZIP archive of standalone image sequence'}</div>
+                  </div>
+                  {exportTarget === 'frames' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Frame Image Format (if frames enabled) */}
+            {(exportTarget === 'frames' || exportTarget === 'both') && (
+              <div className="p-3 bg-white/5 border border-cyan-500/20 rounded-xl space-y-2">
+                <div className="text-[10px] uppercase tracking-widest text-cyan-300 font-bold flex items-center gap-1.5">
+                  <ImageIcon size={12} />
+                  <span>{t.framesFormat}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setFramesFormat('png')}
+                    disabled={isExporting}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
+                      framesFormat === 'png' 
+                        ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20' 
+                        : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
+                    }`}
+                  >
+                    PNG ({lang === 'he' ? 'איכות מקסימלית' : 'Lossless'})
+                  </button>
+                  <button
+                    onClick={() => setFramesFormat('jpeg')}
+                    disabled={isExporting}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
+                      framesFormat === 'jpeg' 
+                        ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20' 
+                        : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
+                    }`}
+                  >
+                    JPEG ({lang === 'he' ? 'דחיסה מהירה' : 'Fast / 95%'})
+                  </button>
+                </div>
+                <p className="text-[9px] text-gray-400 leading-tight">
+                  {lang === 'he' 
+                    ? '📁 הפרמים ייארזו לקובץ ZIP הכולל תמונות ממוספרות (frame_00001.png...) לטעינה נוחה בתוכנות עריכה' 
+                    : '📁 Frames are saved into numbered image sequences (frame_00001.png...) ready for Premiere / After Effects / Resolve'}
+                </p>
+              </div>
+            )}
+
             {/* Resolution & FPS (Supports 12 FPS Lo-Fi / Stop Motion) */}
             <div>
               <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.exportSettings}</label>
@@ -1410,7 +1712,7 @@ export default function App() {
                 >
                   <div>
                     <div className="text-xs font-bold text-indigo-300">{t.passBoth}</div>
-                    <div className="text-[9px] opacity-70">{lang === 'he' ? 'מייצר 2 קבצים: צבע מקורי + עותק שחור-לבן' : 'Exports 2 files: Full Color + B&W Copy'}</div>
+                    <div className="text-[9px] opacity-70">{lang === 'he' ? 'מייצר 2 עותקים: צבע מקורי + עותק שחור-לבן' : 'Exports 2 copies: Full Color + B&W Copy'}</div>
                   </div>
                   {exportPassMode === 'both' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
                 </button>
@@ -1421,15 +1723,17 @@ export default function App() {
               </p>
             </div>
 
-            {/* Video File Format */}
-            <div>
-              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.format}</label>
-              <select value={exportFormat} onChange={e => setExportFormat(e.target.value as any)} className="w-full bg-[#1A1A1D] border border-white/10 p-2.5 rounded text-xs focus:outline-none focus:border-cyan-500 transition-colors" disabled={isExporting}>
-                <option value="webm">WebM (High Performance VP9)</option>
-                <option value="mp4">MP4 Video</option>
-              </select>
-              <p className="mt-2 text-[9px] text-gray-500 leading-tight">{t.supportedWarning}</p>
-            </div>
+            {/* Video File Format (if video enabled) */}
+            {(exportTarget === 'video' || exportTarget === 'both') && (
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.format}</label>
+                <select value={exportFormat} onChange={e => setExportFormat(e.target.value as any)} className="w-full bg-[#1A1A1D] border border-white/10 p-2.5 rounded text-xs focus:outline-none focus:border-cyan-500 transition-colors" disabled={isExporting}>
+                  <option value="webm">WebM (High Performance VP9)</option>
+                  <option value="mp4">MP4 Video</option>
+                </select>
+                <p className="mt-2 text-[9px] text-gray-500 leading-tight">{t.supportedWarning}</p>
+              </div>
+            )}
 
             <div className="pt-4 border-t border-white/5 mt-auto">
               <div className="flex items-center justify-between text-xs mb-6">
@@ -1440,13 +1744,32 @@ export default function App() {
               <button 
                 onClick={startExport} 
                 disabled={!audioUrl || isExporting}
-                className={`w-full py-4 rounded-xl font-black text-sm tracking-widest transition-all ${
+                className={`w-full py-4 rounded-xl font-black text-xs sm:text-sm tracking-wider transition-all flex items-center justify-center gap-2 ${
                   !audioUrl || isExporting 
                     ? 'bg-white/5 text-gray-500 cursor-not-allowed border border-white/10' 
                     : 'bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-600 text-white shadow-xl shadow-indigo-600/30 hover:brightness-110 active:scale-95'
                 }`}
               >
-                {isExporting ? t.exporting.toUpperCase() : t.exportBtn.toUpperCase()}
+                {isExporting ? (
+                  <span>{t.exporting.toUpperCase()}</span>
+                ) : exportTarget === 'both' ? (
+                  <>
+                    <Film size={15} />
+                    <span>+</span>
+                    <FolderArchive size={15} />
+                    <span>{lang === 'he' ? 'ייצא וידיאו + פרמים (ZIP)' : 'EXPORT VIDEO + FRAMES (ZIP)'}</span>
+                  </>
+                ) : exportTarget === 'frames' ? (
+                  <>
+                    <FolderArchive size={15} />
+                    <span>{lang === 'he' ? 'ייצא רצף פרמים (ZIP)' : 'EXPORT FRAMES (ZIP)'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Film size={15} />
+                    <span>{t.exportBtn.toUpperCase()}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

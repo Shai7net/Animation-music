@@ -55,7 +55,17 @@ export const i18n = {
     stageBgOff: "Clean Character: ON (No Flashing)",
     stageBgHint: "Toggle flashing floor, stage grids, and background lighting off for a clean transparent character/foreground.",
     githubSyncBtn: "GitHub & 1-Click Update",
-    githubSyncTooltip: "Sync, check for updates, and run 1-click update on your computer."
+    githubSyncTooltip: "Sync, check for updates, and run 1-click update on your computer.",
+    exportTarget: "Export Type",
+    targetVideoOnly: "Video File Only",
+    targetFramesOnly: "Image Sequence (Frames ZIP)",
+    targetBoth: "Dual: Video + Frames ZIP",
+    framesFormat: "Frame Image Format",
+    framesPng: "PNG (Lossless & Alpha)",
+    framesJpeg: "JPEG (High Quality 95%)",
+    framesZipCompressing: "Compressing Frames into ZIP...",
+    capturedFramesCount: "Frames Captured",
+    framesZipHint: "Exports each video frame as a numbered image (frame_00001.png...) inside a ZIP archive, ready for After Effects, Premiere Pro, Blender, or VJ software."
   },
   he: {
     title: "רטרו-ויז סטודיו",
@@ -67,8 +77,8 @@ export const i18n = {
     resolution: "רזולוציה",
     aspectRatio: "יחס גובה-רוחב",
     fps: "קצב פריימים (FPS)",
-    format: "פורמט קובץ",
-    exportBtn: "ייצא וידאו",
+    format: "פורמט קובץ וידאו",
+    exportBtn: "ייצא מדיה",
     exporting: "מייצא... אנא המתן",
     cancel: "ביטול",
     time: "זמן",
@@ -111,6 +121,16 @@ export const i18n = {
     stageBgOff: "דמות נקייה (ללא רקע מהבהב)",
     stageBgHint: "הסרת רצפת הדיסקו, הגריד וההבהובים ברקע — להצגת הדמות והאלמנטים בלבד באופן נקי ושקוף.",
     githubSyncBtn: "עדכונים מ-GitHub ו-1Click",
-    githubSyncTooltip: "בדיקת עדכונים מ-GitHub והוראות לעדכון בלחיצת כפתור במחשב."
+    githubSyncTooltip: "בדיקת עדכונים מ-GitHub והוראות לעדכון בלחיצת כפתור במחשב.",
+    exportTarget: "סוג תוצר לייצוא",
+    targetVideoOnly: "קובץ וידאו בלבד",
+    targetFramesOnly: "רצף תמונות (תיקיית פריימים ב-ZIP)",
+    targetBoth: "גם וידאו וגם תיקיית פריימים ZIP",
+    framesFormat: "פורמט תמונות הפריימים",
+    framesPng: "PNG (איכות מקסימלית ללא איבוד)",
+    framesJpeg: "JPEG (קל משקל ומהיר)",
+    framesZipCompressing: "אורז את תיקיית הפריימים לקובץ ZIP...",
+    capturedFramesCount: "פריימים שנשמרו",
+    framesZipHint: "מייצר ארכיון ZIP עם כל פריימי הוידאו ממוספרים (frame_00001.png...) המוכנים לעריכה ב-Premiere, After Effects, Photoshop, Blender או לתוכנות VJ."
   }
 };
