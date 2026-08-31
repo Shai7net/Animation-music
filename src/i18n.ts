@@ -65,7 +65,15 @@ export const i18n = {
     framesJpeg: "JPEG (High Quality 95%)",
     framesZipCompressing: "Compressing Frames into ZIP...",
     capturedFramesCount: "Frames Captured",
-    framesZipHint: "Exports each video frame as a numbered image (frame_00001.png...) inside a ZIP archive, ready for After Effects, Premiere Pro, Blender, or VJ software."
+    framesZipHint: "Exports each video frame as a numbered image (frame_00001.png...) inside a ZIP archive, ready for After Effects, Premiere Pro, Blender, or VJ software.",
+    videoRemixTab: "Video Remix",
+    videoRemixBadge: "Video Speed Remix",
+    uploadVideo: "Upload Video",
+    videoStyleName: "Audio-Reactive Video Remix",
+    videoSpeedMeter: "Video Speed",
+    matchVideoDims: "Match Video Resolution & Ratio",
+    cutAtVideoEnd: "Cut at Video End (No Black Screen)",
+    loopVideoEnd: "Loop Video until Audio Ends"
   },
   he: {
     title: "רטרו-ויז סטודיו",
@@ -131,6 +139,14 @@ export const i18n = {
     framesJpeg: "JPEG (קל משקל ומהיר)",
     framesZipCompressing: "אורז את תיקיית הפריימים לקובץ ZIP...",
     capturedFramesCount: "פריימים שנשמרו",
-    framesZipHint: "מייצר ארכיון ZIP עם כל פריימי הוידאו ממוספרים (frame_00001.png...) המוכנים לעריכה ב-Premiere, After Effects, Photoshop, Blender או לתוכנות VJ."
+    framesZipHint: "מייצר ארכיון ZIP עם כל פריימי הוידאו ממוספרים (frame_00001.png...) המוכנים לעריכה ב-Premiere, After Effects, Photoshop, Blender או לתוכנות VJ.",
+    videoRemixTab: "רמיקס וידאו",
+    videoRemixBadge: "וידאו תגובתי לאודיו",
+    uploadVideo: "העלה קובץ וידאו",
+    videoStyleName: "רמיקס וידאו לפי מהירות האודיו",
+    videoSpeedMeter: "מהירות וידאו",
+    matchVideoDims: "התאם רזולוציה ויחס לוידאו",
+    cutAtVideoEnd: "חיתוך בסיום הוידאו (ללא מסך שחור)",
+    loopVideoEnd: "לופ רציף עד סיום האודיו"
   }
 };

@@ -3,7 +3,8 @@ import {
   Play, Pause, Upload, Settings, Monitor, Film, Download, FileAudio, 
   Sparkles, Compass, RotateCcw, Shuffle, ChevronRight, ChevronLeft, Box,
   Layers, Volume2, Maximize2, Repeat, Sliders, Palette, Zap, Radio,
-  Activity, HelpCircle, X, Contrast, GitBranch, FolderArchive, Image as ImageIcon, FileArchive
+  Activity, HelpCircle, X, Contrast, GitBranch, FolderArchive, Image as ImageIcon, FileArchive,
+  Video as VideoIcon
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { i18n, Language } from './i18n';
@@ -24,17 +25,27 @@ import { AudioFXPanel } from './components/AudioFXPanel';
 import { VJModeHUD } from './components/VJModeHUD';
 import { SpatialLayerControls, LayerTransform, defaultLayerTransform } from './components/SpatialLayerControls';
 import { GitHubUpdateModal } from './components/GitHubUpdateModal';
+import { VideoRemixPanel, VideoRemixSettings } from './components/VideoRemixPanel';
+import { generateProceduralDemoVideoBlob } from './videoDemoGenerator';
 
-export type CategoryFilter = 'all' | 'three' | 'butterchurn' | '2d';
+export type CategoryFilter = 'all' | 'video' | 'three' | 'butterchurn' | '2d';
 
 interface UnifiedVisualizer {
   id: string;
   nameEn: string;
   nameHe: string;
-  engine: '2d' | 'three' | 'butterchurn';
+  engine: '2d' | 'three' | 'butterchurn' | 'video';
   threeType?: 'cyber_city' | 'galaxy' | 'monolith' | 'synthwave_horizon' | 'hyperdrive_tunnel' | 'liquid_blob';
   badge?: string;
 }
+
+const videoVisualizer: UnifiedVisualizer = {
+  id: 'video_speed_remix',
+  nameEn: 'Audio-Reactive Video Remix',
+  nameHe: 'רמיקס וידאו לפי מהירות האודיו',
+  engine: 'video',
+  badge: 'Video Speed'
+};
 
 const threeVisualizers: UnifiedVisualizer[] = [
   { id: '3d_three_cyber_city', nameEn: '3D: Cyber City Flight', nameHe: 'תלת-ממד: טיסת סייבר ועיר', engine: 'three', threeType: 'cyber_city', badge: 'Three.js' },
@@ -54,6 +65,7 @@ const butterchurnVisualizer: UnifiedVisualizer = {
 };
 
 const allUnifiedVisualizers: UnifiedVisualizer[] = [
+  videoVisualizer,
   ...threeVisualizers,
   butterchurnVisualizer,
   ...visualizers.map(v => ({
@@ -74,8 +86,27 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [activeStyleId, setActiveStyleId] = useState<string>(threeVisualizers[0].id);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all');
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'styles' | 'dual' | 'fx'>('styles');
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'styles' | 'video' | 'dual' | 'fx'>('styles');
   
+  // Video Remix & Speed Modulation States
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number>(0);
+  const [currentVideoSpeed, setCurrentVideoSpeed] = useState<number>(1.0);
+  const [isLoadingDemoVideo, setIsLoadingDemoVideo] = useState<boolean>(false);
+  const [videoRemixSettings, setVideoRemixSettings] = useState<VideoRemixSettings>({
+    speedSensitivity: 1.4,
+    minSpeed: 0.2,
+    maxSpeed: 3.5,
+    invertReactivity: false,
+    freqDriver: 'bass',
+    smoothing: 0.35,
+    endBehavior: 'cut_at_video',
+    videoFit: 'cover',
+    strobeOnDrop: true
+  });
+
   // Dual Layer & 3D Spatial Composer States
   const [isDualLayerEnabled, setIsDualLayerEnabled] = useState<boolean>(false);
   const [layer1Id, setLayer1Id] = useState<string>(threeVisualizers[1]?.id || threeVisualizers[0].id); // 3D Synthwave Horizon
@@ -134,6 +165,7 @@ export default function App() {
   const t = i18n[lang];
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   
   // Canvases & Container
   const canvas2DRef = useRef<HTMLCanvasElement>(null);
@@ -177,6 +209,10 @@ export default function App() {
   const exportPassModeRef = useRef(exportPassMode);
   const previewBWRef = useRef(previewBW);
   const hideStageBackgroundRef = useRef(hideStageBackground);
+  const videoRemixSettingsRef = useRef(videoRemixSettings);
+  const videoUrlRef = useRef(videoUrl);
+  const smoothedVideoSpeedRef = useRef<number>(1.0);
+  const lastSpeedUpdateUIRef = useRef<number>(0);
 
   useEffect(() => { activeStyleIdRef.current = activeStyleId; }, [activeStyleId]);
   useEffect(() => { isDualLayerEnabledRef.current = isDualLayerEnabled; }, [isDualLayerEnabled]);
@@ -197,6 +233,8 @@ export default function App() {
   useEffect(() => { exportFpsRef.current = exportFps; }, [exportFps]);
   useEffect(() => { exportResRef.current = exportRes; }, [exportRes]);
   useEffect(() => { exportArRef.current = exportAr; }, [exportAr]);
+  useEffect(() => { videoRemixSettingsRef.current = videoRemixSettings; }, [videoRemixSettings]);
+  useEffect(() => { videoUrlRef.current = videoUrl; }, [videoUrl]);
 
   const effectiveBaseItem = isDualLayerEnabled
     ? (allUnifiedVisualizers.find(v => v.id === layer1Id) || allUnifiedVisualizers[0])
@@ -354,6 +392,72 @@ export default function App() {
         }
       }
 
+      // Video Speed Remix Processing
+      if (videoRef.current && videoUrlRef.current) {
+        const vEl = videoRef.current;
+        const set = videoRemixSettingsRef.current;
+        
+        let driverEnergy = 0;
+        if (set.freqDriver === 'bass') {
+          driverEnergy = (dsp.bands.bass * 1.5 + dsp.bands.subBass * 1.2) / 2.0;
+        } else if (set.freqDriver === 'mid') {
+          driverEnergy = (dsp.bands.lowMid + dsp.bands.mid) / 2.0;
+        } else if (set.freqDriver === 'treble') {
+          driverEnergy = (dsp.bands.highMid + dsp.bands.treble) / 2.0;
+        } else if (set.freqDriver === 'drop') {
+          driverEnergy = dsp.beat.beatIntensity;
+        } else {
+          driverEnergy = dsp.bands.overallEnergy;
+        }
+
+        driverEnergy = Math.max(0, Math.min(1, driverEnergy));
+
+        // Invert curve if enabled
+        // Default: Quiet / Lows = Slow (minSpeed), Highs / Loud = Fast (maxSpeed)
+        // Inverted: Lows / Bass = Fast (maxSpeed), Highs / Loud = Slow (minSpeed)
+        let speedFactor = set.invertReactivity ? (1.0 - driverEnergy) : driverEnergy;
+        const curvePow = 1 / Math.max(0.2, set.speedSensitivity);
+        speedFactor = Math.pow(Math.max(0, Math.min(1, speedFactor)), curvePow);
+
+        const targetSpeed = set.minSpeed + (set.maxSpeed - set.minSpeed) * speedFactor;
+        const smoothRate = 1 - Math.max(0.01, Math.min(0.95, set.smoothing));
+        smoothedVideoSpeedRef.current += (targetSpeed - smoothedVideoSpeedRef.current) * smoothRate;
+        const effectiveSpeed = Math.max(0.05, Math.min(16, smoothedVideoSpeedRef.current));
+
+        try {
+          vEl.playbackRate = effectiveSpeed;
+        } catch (e) {}
+
+        // Throttle UI update of current speed
+        const nowMs = performance.now();
+        if (nowMs - lastSpeedUpdateUIRef.current > 100) {
+          lastSpeedUpdateUIRef.current = nowMs;
+          setCurrentVideoSpeed(effectiveSpeed);
+        }
+
+        // Sync playback state with audio
+        if (isPlayingRef.current || isExportingRef.current) {
+          if (vEl.paused) {
+            vEl.play().catch(e => console.warn(e));
+          }
+        } else {
+          if (!vEl.paused) {
+            vEl.pause();
+          }
+        }
+
+        // End of video handling & Clean cutoff (Prevents trailing black screen)
+        if (vEl.duration > 0 && vEl.currentTime >= vEl.duration - 0.06) {
+          if (set.endBehavior === 'loop_video' || (!isExportingRef.current && isLoopingRef.current)) {
+            vEl.currentTime = 0;
+            vEl.play().catch(e => console.warn(e));
+          } else if (isExportingRef.current && set.endBehavior === 'cut_at_video') {
+            // Cut the export immediately at the end of the video! Clean & no black screen.
+            stopExportManually();
+          }
+        }
+      }
+
       const baseItem = isDual 
         ? (allUnifiedVisualizers.find(v => v.id === layer1IdRef.current) || allUnifiedVisualizers[0])
         : (allUnifiedVisualizers.find(v => v.id === activeStyleIdRef.current) || allUnifiedVisualizers[0]);
@@ -366,7 +470,64 @@ export default function App() {
       else if (baseItem.engine === 'butterchurn' && butterchurnInstanceRef.current) {
         butterchurnInstanceRef.current.render();
       }
-      // 3. 2D Canvas Engine (Base Layer 1)
+      // 3. Video Remix Engine (Base Layer 1)
+      else if (baseItem.engine === 'video' && canvas2DRef.current) {
+        const ctx = canvas2DRef.current.getContext('2d');
+        const w = canvas2DRef.current.width;
+        const h = canvas2DRef.current.height;
+        if (ctx) {
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, w, h);
+
+          const vEl = videoRef.current;
+          if (vEl && vEl.readyState >= 2 && videoUrlRef.current) {
+            const vw = vEl.videoWidth || w;
+            const vh = vEl.videoHeight || h;
+            const set = videoRemixSettingsRef.current;
+            
+            if (set.videoFit === 'cover') {
+              const scale = Math.max(w / vw, h / vh);
+              const dw = vw * scale;
+              const dh = vh * scale;
+              const dx = (w - dw) / 2;
+              const dy = (h - dh) / 2;
+              ctx.drawImage(vEl, dx, dy, dw, dh);
+            } else {
+              const scale = Math.min(w / vw, h / vh);
+              const dw = vw * scale;
+              const dh = vh * scale;
+              const dx = (w - dw) / 2;
+              const dy = (h - dh) / 2;
+              ctx.drawImage(vEl, dx, dy, dw, dh);
+            }
+
+            // Drop Flash / Strobe if enabled
+            if (set.strobeOnDrop && dsp.beat.isDrop) {
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+              ctx.fillRect(0, 0, w, h);
+            }
+          } else {
+            // Placeholder guide when no video loaded yet
+            ctx.fillStyle = '#09090D';
+            ctx.fillRect(0, 0, w, h);
+            
+            ctx.strokeStyle = '#06b6d4';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(40, 40, w - 80, h - 80);
+            
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = 'bold 24px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(lang === 'he' ? '📁 טען סרטון וידאו בטאב "רמיקס וידאו" משמאל' : '📁 Upload a video clip in "Video Remix" tab on the left', w / 2, h / 2 - 20);
+            
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '16px sans-serif';
+            ctx.fillText(lang === 'he' ? 'הוידאו ישנה את מהירותו בדינמיקה חיה לפי תדרי האודיו והבסים' : 'Video playback speed will dynamically react to your audio track frequencies & beats', w / 2, h / 2 + 25);
+          }
+        }
+      }
+      // 4. 2D Canvas Engine (Base Layer 1)
       else if (baseItem.engine === '2d' && canvas2DRef.current) {
         const ctx = canvas2DRef.current.getContext('2d');
         if (ctx) {
@@ -527,6 +688,55 @@ export default function App() {
     setIsMicActive(false);
   };
 
+  const handleUploadVideo = (file: File) => {
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    const url = URL.createObjectURL(file);
+    setVideoUrl(url);
+    setVideoFile(file);
+    setActiveStyleId('video_speed_remix');
+    setActiveSidebarTab('video');
+  };
+
+  const handleLoadDemoVideo = async () => {
+    setIsLoadingDemoVideo(true);
+    try {
+      const blob = await generateProceduralDemoVideoBlob();
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      const url = URL.createObjectURL(blob);
+      const fakeFile = new File([blob], 'Demo_VJ_Neon_Tunnel.webm', { type: blob.type || 'video/webm' });
+      setVideoUrl(url);
+      setVideoFile(fakeFile);
+      setActiveStyleId('video_speed_remix');
+      setActiveSidebarTab('video');
+    } catch (err) {
+      console.error('Failed to generate demo video:', err);
+    } finally {
+      setIsLoadingDemoVideo(false);
+    }
+  };
+
+  const handleMatchVideoDimensions = () => {
+    if (!videoDimensions) return;
+    const { width, height } = videoDimensions;
+    const ratio = width / height;
+
+    if (Math.abs(ratio - 16 / 9) < 0.15) {
+      setExportAr('16:9');
+    } else if (Math.abs(ratio - 9 / 16) < 0.15) {
+      setExportAr('9:16');
+    } else if (Math.abs(ratio - 1) < 0.15) {
+      setExportAr('1:1');
+    }
+
+    if (height >= 2000 || width >= 3800) {
+      setExportRes('4k');
+    } else if (height >= 1000 || width >= 1900) {
+      setExportRes('1080p');
+    } else {
+      setExportRes('720p');
+    }
+  };
+
   const handleAudioLoad = () => {
     if (!audioRef.current) return;
     const engine = audioEngineRef.current;
@@ -553,8 +763,10 @@ export default function App() {
     }
     if (isPlaying) {
       audioRef.current.pause();
+      if (videoRef.current) videoRef.current.pause();
     } else {
       audioRef.current.play();
+      if (videoRef.current && videoUrl) videoRef.current.play().catch(e => console.warn(e));
     }
     setIsPlaying(!isPlaying);
   };
@@ -694,6 +906,7 @@ ${exportPassModeRef.current === 'both'
     setIsExporting(false);
     setIsPlaying(false);
     if (audioRef.current) audioRef.current.pause();
+    if (videoRef.current) videoRef.current.pause();
   };
 
   // Video & Frames Export (Supports 12 FPS, 24 FPS, 30 FPS, 60 FPS, Video + Frames ZIP folder, Color & Pure B&W Matte Pass)
@@ -714,6 +927,11 @@ ${exportPassModeRef.current === 'both'
     setIsExporting(true);
     setIsPlaying(true);
     updateCanvasSizes();
+    
+    if (videoRef.current && videoUrlRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.play().catch(e => console.warn(e));
+    }
     
     let bps = 5000000;
     if (exportRes === '1080p') bps = 10000000;
@@ -814,6 +1032,7 @@ ${exportPassModeRef.current === 'both'
   const stopExportManually = () => {
     if (isExportingRef.current) {
       if (audioRef.current) audioRef.current.pause();
+      if (videoRef.current) videoRef.current.pause();
       setIsPlaying(false);
       const shouldExportVideo = exportTargetRef.current === 'video' || exportTargetRef.current === 'both';
       let hasRunningRecorder = false;
@@ -836,6 +1055,7 @@ ${exportPassModeRef.current === 'both'
   const handleAudioEnded = () => {
     if (isExportingRef.current) {
       setIsPlaying(false);
+      if (videoRef.current) videoRef.current.pause();
       const shouldExportVideo = exportTargetRef.current === 'video' || exportTargetRef.current === 'both';
       let hasRunningRecorder = false;
 
@@ -854,9 +1074,14 @@ ${exportPassModeRef.current === 'both'
     } else if (isLoopingRef.current && audioRef.current) {
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch(e => console.warn('Loop playback error:', e));
+      if (videoRef.current && videoUrl) {
+        videoRef.current.currentTime = 0;
+        videoRef.current.play().catch(e => console.warn(e));
+      }
       setIsPlaying(true);
     } else {
       setIsPlaying(false);
+      if (videoRef.current) videoRef.current.pause();
     }
   };
 
@@ -869,6 +1094,7 @@ ${exportPassModeRef.current === 'both'
 
   const filteredVisualizers = allUnifiedVisualizers.filter(v => {
     if (categoryFilter === 'all') return true;
+    if (categoryFilter === 'video') return v.engine === 'video';
     if (categoryFilter === 'three') return v.engine === 'three';
     if (categoryFilter === 'butterchurn') return v.engine === 'butterchurn';
     if (categoryFilter === '2d') return v.engine === '2d';
@@ -919,6 +1145,8 @@ ${exportPassModeRef.current === 'both'
               setIsDualLayerEnabled(next);
               if (next) setActiveSidebarTab('dual');
             }}
+            currentVideoSpeed={currentVideoSpeed}
+            isVideoModeActive={activeItem.engine === 'video'}
           />
 
           <div className="flex bg-white/5 rounded-full p-1 border border-white/10">
@@ -941,33 +1169,48 @@ ${exportPassModeRef.current === 'both'
       {/* Main Layout */}
       <main className="flex flex-1 overflow-hidden">
         
-        {/* Left Sidebar: Styles & Engines / Dual Layer 3D / Audio FX */}
+        {/* Left Sidebar: Styles / Video Remix / Dual Layer 3D / Audio FX */}
         <aside className="w-72 lg:w-80 border-e border-white/5 flex flex-col bg-[#121214] shrink-0">
           
-          {/* Top Tabs: Visualizers vs Dual Layer vs Audio FX */}
-          <div className="grid grid-cols-3 p-1.5 border-b border-white/5 bg-black/40 shrink-0 gap-1">
+          {/* Top Tabs: Visualizers vs Video Remix vs Dual Layer vs Audio FX */}
+          <div className="grid grid-cols-4 p-1 border-b border-white/5 bg-black/40 shrink-0 gap-1">
             <button
               onClick={() => setActiveSidebarTab('styles')}
-              className={`py-2 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all truncate ${
+              className={`py-2 text-[10px] sm:text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 transition-all truncate ${
                 activeSidebarTab === 'styles'
                   ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
               }`}
             >
-              <Film size={13} className="shrink-0" />
+              <Film size={12} className="shrink-0" />
               <span className="truncate">{t.styles}</span>
             </button>
 
             <button
+              onClick={() => setActiveSidebarTab('video')}
+              className={`py-2 text-[10px] sm:text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 transition-all truncate relative ${
+                activeSidebarTab === 'video'
+                  ? 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-black font-black shadow-md shadow-emerald-500/20'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <VideoIcon size={12} className="shrink-0" />
+              <span className="truncate">{lang === 'he' ? 'וידאו' : 'Video'}</span>
+              {videoUrl && (
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+            </button>
+
+            <button
               onClick={() => setActiveSidebarTab('dual')}
-              className={`py-2 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all truncate relative ${
+              className={`py-2 text-[10px] sm:text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 transition-all truncate relative ${
                 activeSidebarTab === 'dual'
                   ? 'bg-gradient-to-r from-cyan-500 to-indigo-500 text-black font-black shadow-md shadow-cyan-500/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
               }`}
             >
-              <Layers size={13} className="shrink-0" />
-              <span className="truncate">{t.dualLayerTab || (lang === 'he' ? 'שכבות (3D)' : 'Dual (3D)')}</span>
+              <Layers size={12} className="shrink-0" />
+              <span className="truncate">{t.dualLayerTab || (lang === 'he' ? 'שכבות' : 'Dual')}</span>
               {isDualLayerEnabled && (
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
               )}
@@ -975,22 +1218,22 @@ ${exportPassModeRef.current === 'both'
 
             <button
               onClick={() => setActiveSidebarTab('fx')}
-              className={`py-2 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all truncate ${
+              className={`py-2 text-[10px] sm:text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 transition-all truncate ${
                 activeSidebarTab === 'fx'
                   ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
               }`}
             >
-              <Sliders size={13} className="shrink-0" />
-              <span className="truncate">{lang === 'he' ? 'עיבוד ו-FX' : 'DSP & FX'}</span>
+              <Sliders size={12} className="shrink-0" />
+              <span className="truncate">{lang === 'he' ? 'FX' : 'DSP'}</span>
             </button>
           </div>
 
           {activeSidebarTab === 'styles' ? (
             <>
               {/* Category Filter Tabs */}
-              <div className="p-3 border-b border-white/5 bg-black/20 shrink-0">
-                <div className="grid grid-cols-4 gap-1 p-1 bg-white/5 rounded-lg text-[10px] font-bold">
+              <div className="p-2 border-b border-white/5 bg-black/20 shrink-0">
+                <div className="grid grid-cols-5 gap-1 p-0.5 bg-white/5 rounded-lg text-[9px] font-bold">
                   <button 
                     onClick={() => setCategoryFilter('all')}
                     className={`py-1.5 rounded transition-all ${categoryFilter === 'all' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
@@ -998,24 +1241,31 @@ ${exportPassModeRef.current === 'both'
                     {lang === 'he' ? 'הכל' : 'All'}
                   </button>
                   <button 
-                    onClick={() => setCategoryFilter('three')}
-                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-1 ${categoryFilter === 'three' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
+                    onClick={() => setCategoryFilter('video')}
+                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-0.5 ${categoryFilter === 'video' ? 'bg-emerald-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
                   >
-                    <Box size={11} />
+                    <VideoIcon size={10} />
+                    {lang === 'he' ? 'וידאו' : 'Video'}
+                  </button>
+                  <button 
+                    onClick={() => setCategoryFilter('three')}
+                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-0.5 ${categoryFilter === 'three' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    <Box size={10} />
                     3D
                   </button>
                   <button 
                     onClick={() => setCategoryFilter('butterchurn')}
-                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-1 ${categoryFilter === 'butterchurn' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
+                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-0.5 ${categoryFilter === 'butterchurn' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
                   >
-                    <Sparkles size={11} />
-                    Milkdrop
+                    <Sparkles size={10} />
+                    Milk
                   </button>
                   <button 
                     onClick={() => setCategoryFilter('2d')}
-                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-1 ${categoryFilter === '2d' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
+                    className={`py-1.5 rounded transition-all flex items-center justify-center gap-0.5 ${categoryFilter === '2d' ? 'bg-cyan-500 text-black font-black' : 'text-gray-400 hover:text-white'}`}
                   >
-                    <Layers size={11} />
+                    <Layers size={10} />
                     2D
                   </button>
                 </div>
@@ -1044,12 +1294,14 @@ ${exportPassModeRef.current === 'both'
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className={`w-2 h-2 rounded-full shrink-0 ${
+                          v.engine === 'video' ? 'bg-emerald-400 animate-pulse' :
                           v.engine === 'three' ? 'bg-indigo-400' : v.engine === 'butterchurn' ? 'bg-fuchsia-400' : 'bg-cyan-400'
                         }`} />
                         <span className="text-xs font-medium truncate">{lang === 'en' ? v.nameEn : v.nameHe}</span>
                       </div>
                       {v.badge && (
                         <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                          v.engine === 'video' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
                           v.engine === 'three' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' :
                           v.engine === 'butterchurn' ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30' :
                           'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
@@ -1103,6 +1355,24 @@ ${exportPassModeRef.current === 'both'
                 </div>
               )}
             </>
+          ) : activeSidebarTab === 'video' ? (
+            <div className="p-3 flex-1 overflow-y-auto custom-scrollbar">
+              <VideoRemixPanel
+                lang={lang}
+                videoFile={videoFile}
+                videoUrl={videoUrl}
+                videoDimensions={videoDimensions}
+                videoDuration={videoDuration}
+                currentSpeed={currentVideoSpeed}
+                settings={videoRemixSettings}
+                onUpdateSettings={(newSettings) => setVideoRemixSettings(prev => ({ ...prev, ...newSettings }))}
+                onUploadVideo={handleUploadVideo}
+                onLoadDemoVideo={handleLoadDemoVideo}
+                isLoadingDemoVideo={isLoadingDemoVideo}
+                onMatchDimensions={handleMatchVideoDimensions}
+                isExporting={isExporting}
+              />
+            </div>
           ) : activeSidebarTab === 'dual' ? (
             <div className="p-3 flex-1 overflow-y-auto custom-scrollbar">
               <SpatialLayerControls
@@ -1159,6 +1429,16 @@ ${exportPassModeRef.current === 'both'
                 {isMicActive ? 'MIC LIVE INPUT' : `AUDIO: ${audioFile?.name?.toUpperCase() || 'PLAYING'}`}
               </div>
             )}
+
+            {activeItem.engine === 'video' && (
+              <div className="px-3 py-1 bg-emerald-950/80 border border-emerald-500/50 backdrop-blur-md rounded-full text-[10px] font-mono text-emerald-300 shadow-xl flex items-center gap-2">
+                <VideoIcon size={12} className="text-emerald-400 animate-pulse" />
+                <span>SPEED: {currentVideoSpeed.toFixed(2)}x</span>
+                {videoDimensions && (
+                  <span className="text-[9px] text-emerald-400/80">({videoDimensions.width}x{videoDimensions.height})</span>
+                )}
+              </div>
+            )}
             
             {isDualLayerEnabled ? (
               <div className="px-3 py-1 bg-gradient-to-r from-cyan-950/80 via-indigo-950/80 to-purple-950/80 border border-cyan-500/50 backdrop-blur-md rounded-full text-[10px] font-mono text-cyan-200 shadow-xl flex items-center gap-2">
@@ -1170,7 +1450,7 @@ ${exportPassModeRef.current === 'both'
                   Z: {layerTransform.depthZ > 0 ? `+${layerTransform.depthZ}` : layerTransform.depthZ}px
                 </span>
               </div>
-            ) : (
+            ) : activeItem.engine !== 'video' && (
               <div className="px-2.5 py-1 bg-white/5 border border-white/10 backdrop-blur-md rounded-full text-[9px] font-mono text-gray-400">
                 ENGINE: {activeItem.engine.toUpperCase()}
               </div>
@@ -1853,6 +2133,28 @@ ${exportPassModeRef.current === 'both'
           onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
           onDurationChange={() => setDuration(audioRef.current?.duration || 0)}
           onEnded={handleAudioEnded}
+          className="hidden"
+        />
+      )}
+
+      {/* Hidden Video Element for Video Remix & Speed Modulation */}
+      {videoUrl && (
+        <video
+          ref={videoRef}
+          src={videoUrl}
+          crossOrigin="anonymous"
+          playsInline
+          muted
+          loop={videoRemixSettings.endBehavior === 'loop_video' || (!isExporting && isLooping)}
+          onLoadedMetadata={() => {
+            if (videoRef.current) {
+              setVideoDimensions({
+                width: videoRef.current.videoWidth,
+                height: videoRef.current.videoHeight
+              });
+              setVideoDuration(videoRef.current.duration);
+            }
+          }}
           className="hidden"
         />
       )}

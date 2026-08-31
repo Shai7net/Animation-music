@@ -16,6 +16,8 @@ interface VJModeHUDProps {
   onOpenShortcuts: () => void;
   isDualLayerEnabled?: boolean;
   onToggleDualLayer?: () => void;
+  currentVideoSpeed?: number;
+  isVideoModeActive?: boolean;
 }
 
 export const VJModeHUD: React.FC<VJModeHUDProps> = ({
@@ -26,13 +28,26 @@ export const VJModeHUD: React.FC<VJModeHUDProps> = ({
   onToggleFullscreen,
   onOpenShortcuts,
   isDualLayerEnabled = false,
-  onToggleDualLayer
+  onToggleDualLayer,
+  currentVideoSpeed,
+  isVideoModeActive
 }) => {
   const isHe = lang === 'he';
 
   return (
     <div className="flex items-center gap-2">
       
+      {/* Live Video Speed HUD (when Video Remix is active) */}
+      {isVideoModeActive && currentVideoSpeed !== undefined && (
+        <div 
+          className="px-2.5 py-1 rounded-full border border-cyan-500/50 bg-gradient-to-r from-cyan-500/20 to-fuchsia-500/20 backdrop-blur-md flex items-center gap-1.5 font-mono text-[10px] font-bold text-cyan-200 shadow-md shadow-cyan-500/20"
+          title={isHe ? `מהירות וידאו תגובתית חיה: ${currentVideoSpeed.toFixed(2)}x` : `Live Audio-Reactive Speed: ${currentVideoSpeed.toFixed(2)}x`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+          <span>{currentVideoSpeed.toFixed(2)}x</span>
+        </div>
+      )}
+
       {/* Dual Layer Quick Badge / Toggle */}
       {onToggleDualLayer && (
         <button
