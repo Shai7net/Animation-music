@@ -1605,10 +1605,10 @@ ${exportPassModeRef.current === 'both'
               </div>
             )}
 
-            {/* 1. Base 2D Canvas */}
+            {/* 1. Base 2D & Video Remix Canvas */}
             <canvas 
               ref={canvas2DRef} 
-              className={`max-w-full max-h-full object-contain pointer-events-none ${activeItem.engine === '2d' ? 'block' : 'hidden'} ${bloomEffect ? 'filter drop-shadow-[0_0_15px_rgba(0,255,255,0.4)]' : ''}`} 
+              className={`max-w-full max-h-full object-contain pointer-events-none ${(activeItem.engine === '2d' || activeItem.engine === 'video') ? 'block' : 'hidden'} ${bloomEffect ? 'filter drop-shadow-[0_0_15px_rgba(0,255,255,0.4)]' : ''}`} 
             />
 
             {/* 2. Base Three.js WebGL Canvas */}
