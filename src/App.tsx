@@ -449,14 +449,41 @@ export default function App() {
           }
         }
 
-        // End of video handling & Clean cutoff (Prevents trailing black screen)
+        // End of video handling & Audio-Video Synchronized Loop / Cutoff
         if (vEl.duration > 0 && vEl.currentTime >= vEl.duration - 0.06) {
-          if (set.endBehavior === 'loop_video' || (!isExportingRef.current && isLoopingRef.current)) {
-            vEl.currentTime = 0;
-            vEl.play().catch(e => console.warn(e));
-          } else if (isExportingRef.current && set.endBehavior === 'cut_at_video') {
-            // Cut the export immediately at the end of the video! Clean & no black screen.
-            stopExportManually();
+          if (isExportingRef.current) {
+            if (set.endBehavior === 'cut_at_video') {
+              // In export: Cut the export immediately at the end of the video! Clean & no black screen.
+              stopExportManually();
+            } else {
+              // Seamless video loop in export
+              vEl.currentTime = 0;
+              vEl.play().catch(e => console.warn(e));
+            }
+          } else {
+            // In Live Preview:
+            if (set.endBehavior === 'cut_at_video') {
+              // Synchronize BOTH audio and video to loop together from 0:00 when video finishes!
+              if (isLoopingRef.current) {
+                vEl.currentTime = 0;
+                vEl.play().catch(e => console.warn(e));
+                if (audioRef.current) {
+                  audioRef.current.currentTime = 0;
+                  audioRef.current.play().catch(e => console.warn(e));
+                }
+              } else {
+                // If loop is off, pause both when video reaches the end
+                vEl.pause();
+                if (audioRef.current) {
+                  audioRef.current.pause();
+                }
+                setIsPlaying(false);
+              }
+            } else {
+              // 'loop_video': only loop video continuously while audio keeps playing
+              vEl.currentTime = 0;
+              vEl.play().catch(e => console.warn(e));
+            }
           }
         }
       }

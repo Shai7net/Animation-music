@@ -441,7 +441,7 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         </p>
 
         <div className="space-y-1.5">
-          {/* Option A: Cut at video end */}
+          {/* Option A: Cut at video end / Sync Audio Loop */}
           <button
             onClick={() => updateSetting('endBehavior', 'cut_at_video')}
             disabled={isExporting}
@@ -454,10 +454,12 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
             <div>
               <div className="text-xs font-bold flex items-center gap-1.5">
                 <Scissors size={13} className="text-cyan-400" />
-                <span>{isHe ? 'חיתוך בסיום הוידאו (האודיו נחתך בסוף)' : 'Cut Export at Video End (Trim Audio)'}</span>
+                <span>{isHe ? 'סנכרון מלא בסיום הוידאו (המוזיקה והוידאו מתחילים מחדש יחד)' : 'Full Sync at Video End (Audio & Video Restart Together)'}</span>
               </div>
               <div className="text-[9px] opacity-70 mt-0.5">
-                {isHe ? 'הייצוא נעצר בדיוק בסוף הסרטון, ללא מסך שחור!' : 'Export cleanly finishes when video ends, preventing any blank black screen.'}
+                {isHe 
+                  ? 'כשהוידאו מסתיים, גם המוזיקה מתחילה מחדש מ-0:00 יחד איתו (או עוצרת). בייצוא - חיתוך נקי ללא מסך שחור!' 
+                  : 'When video ends, audio loops back from 0:00 together with it! In export: clean finish without blank black screen.'}
               </div>
             </div>
             {currentSettings.endBehavior === 'cut_at_video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
