@@ -132,6 +132,9 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
   const [showGitHubModal, setShowGitHubModal] = useState<boolean>(false);
+  const [hasNewGitHubUpdate, setHasNewGitHubUpdate] = useState<boolean>(false);
+  const [latestCommitInfo, setLatestCommitInfo] = useState<any>(null);
+  const [showUpdateToast, setShowUpdateToast] = useState<boolean>(false);
 
   // Export Settings
   const [exportRes, setExportRes] = useState<'720p' | '1080p' | '4k'>('1080p');
@@ -839,6 +842,12 @@ export default function App() {
           const randIdx = Math.floor(Math.random() * allUnifiedVisualizers.length);
           setActiveStyleId(allUnifiedVisualizers[randIdx].id);
         }
+      } else if (e.key === 'y' || e.key === 'Y' || e.key === 'ט') {
+        e.preventDefault();
+        setShowGitHubModal(true);
+        setShowUpdateToast(true);
+        navigator.clipboard.writeText('npm run update').catch(() => {});
+        setTimeout(() => setShowUpdateToast(false), 3000);
       }
     };
 
@@ -1364,13 +1373,18 @@ ${exportPassModeRef.current === 'both'
                 videoDimensions={videoDimensions}
                 videoDuration={videoDuration}
                 currentSpeed={currentVideoSpeed}
+                currentVideoSpeed={currentVideoSpeed}
                 settings={videoRemixSettings}
                 onUpdateSettings={(newSettings) => setVideoRemixSettings(prev => ({ ...prev, ...newSettings }))}
                 onUploadVideo={handleUploadVideo}
                 onLoadDemoVideo={handleLoadDemoVideo}
                 isLoadingDemoVideo={isLoadingDemoVideo}
+                isLoadingDemo={isLoadingDemoVideo}
                 onMatchDimensions={handleMatchVideoDimensions}
+                onMatchVideoDimensions={handleMatchVideoDimensions}
                 isExporting={isExporting}
+                isActiveStyle={activeItem.engine === 'video'}
+                onSelectVideoStyle={() => setActiveStyleId('video_speed_remix')}
               />
             </div>
           ) : activeSidebarTab === 'dual' ? (
@@ -2115,11 +2129,57 @@ ${exportPassModeRef.current === 'both'
         </div>
       )}
 
+      {/* Floating Update Notification Toast / Banner */}
+      {hasNewGitHubUpdate && !showGitHubModal && (
+        <div className="fixed bottom-20 start-6 z-40 animate-in slide-in-from-bottom-5 fade-in duration-300">
+          <div className="p-3 bg-[#14141c]/95 border border-cyan-500/50 backdrop-blur-md rounded-2xl shadow-2xl shadow-cyan-500/20 flex items-center gap-3 text-xs text-white max-w-sm">
+            <div className="w-8 h-8 rounded-xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-300 font-bold shrink-0 animate-pulse">
+              Y
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-cyan-300 flex items-center gap-1.5">
+                <Sparkles size={13} className="text-yellow-400" />
+                <span>{lang === 'he' ? 'קיים עדכון חדש לפרויקט!' : 'New Update Available!'}</span>
+              </div>
+              <div className="text-[10px] text-gray-300 truncate">
+                {lang === 'he' ? 'לחץ על [Y] לעדכון מהיר' : 'Press [Y] key to update'}
+              </div>
+            </div>
+            <button
+              onClick={() => setShowGitHubModal(true)}
+              className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-black font-black rounded-lg text-[11px] shadow-sm transition-all cursor-pointer shrink-0"
+            >
+              {lang === 'he' ? 'עדכן [Y]' : 'Update [Y]'}
+            </button>
+            <button
+              onClick={() => setHasNewGitHubUpdate(false)}
+              className="text-gray-400 hover:text-white p-1 rounded transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Quick feedback toast when pressing Y */}
+      {showUpdateToast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-in fade-in zoom-in duration-150">
+          <div className="px-4 py-2 bg-cyan-500 text-black font-black text-xs rounded-full shadow-2xl flex items-center gap-2">
+            <Zap size={14} className="fill-current" />
+            <span>{lang === 'he' ? '🚀 פקודת העדכון הועתקה! פותח חלון עדכון...' : '🚀 Update command copied! Opening updater...'}</span>
+          </div>
+        </div>
+      )}
+
       {/* GitHub Sync & 1-Click Update Modal */}
       <GitHubUpdateModal 
         isOpen={showGitHubModal}
         onClose={() => setShowGitHubModal(false)}
         lang={lang}
+        onUpdateDetected={(hasUpdate, commit) => {
+          setHasNewGitHubUpdate(hasUpdate);
+          if (commit) setLatestCommitInfo(commit);
+        }}
       />
 
       {/* Hidden Audio Element */}

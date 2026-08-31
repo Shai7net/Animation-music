@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   GitBranch, 
   GitPullRequest, 
@@ -15,17 +15,20 @@ import {
   Layers,
   Clock,
   User,
-  HelpCircle
+  HelpCircle,
+  Zap
 } from 'lucide-react';
 import { Language } from '../i18n';
 
-interface GitHubUpdateModalProps {
+export interface GitHubUpdateModalProps {
   isOpen: boolean;
   onClose: () => void;
   lang: Language;
+  hasNewUpdate?: boolean;
+  onUpdateDetected?: (hasUpdate: boolean, commitInfo: CommitInfo | null) => void;
 }
 
-interface CommitInfo {
+export interface CommitInfo {
   sha: string;
   shortSha: string;
   message: string;
@@ -38,6 +41,7 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
   isOpen,
   onClose,
   lang,
+  onUpdateDetected
 }) => {
   const isHe = lang === 'he';
 
@@ -55,9 +59,10 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
   const [latestCommit, setLatestCommit] = useState<CommitInfo | null>(null);
   const [hasNewUpdate, setHasNewUpdate] = useState<boolean>(false);
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
+  const [justUpdatedFeedback, setJustUpdatedFeedback] = useState<boolean>(false);
 
   // Check for updates on mount or when repo changes
-  const checkForUpdates = async (repoName: string = repoInput) => {
+  const checkForUpdates = useCallback(async (repoName: string = repoInput) => {
     const cleanRepo = repoName.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
     if (!cleanRepo || !cleanRepo.includes('/')) {
       setError(isHe ? 'נא להזין שם מאגר בפורמט: username/repository' : 'Please enter repository in format: username/repository');
@@ -107,13 +112,15 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
         const storedSha = localStorage.getItem('retroviz_local_commit_sha');
         if (storedSha && storedSha !== sha) {
           setHasNewUpdate(true);
+          if (onUpdateDetected) onUpdateDetected(true, info);
         } else if (!storedSha) {
-          // If first time checking, assume up-to-date or let user set it
           setLastKnownSha(sha);
           localStorage.setItem('retroviz_local_commit_sha', sha);
           setHasNewUpdate(false);
+          if (onUpdateDetected) onUpdateDetected(false, info);
         } else {
           setHasNewUpdate(false);
+          if (onUpdateDetected) onUpdateDetected(false, info);
         }
       }
     } catch (err: any) {
@@ -121,33 +128,63 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [repoInput, isHe, onUpdateDetected]);
+
+  useEffect(() => {
+    checkForUpdates(repoInput);
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
       checkForUpdates(repoInput);
     }
-  }, [isOpen]);
+  }, [isOpen, checkForUpdates, repoInput]);
 
-  const copyUpdateCommand = (cmd: string) => {
+  const copyUpdateCommand = (cmd: string = 'npm run update') => {
     navigator.clipboard.writeText(cmd);
     setCopiedCmd(true);
-    setTimeout(() => setCopiedCmd(false), 2000);
+    setTimeout(() => setCopiedCmd(false), 2500);
   };
 
-  const markAsUpToDate = () => {
+  const applyUpdateNow = () => {
+    copyUpdateCommand('npm run update');
     if (latestCommit) {
       setLastKnownSha(latestCommit.sha);
       localStorage.setItem('retroviz_local_commit_sha', latestCommit.sha);
       setHasNewUpdate(false);
+      if (onUpdateDetected) onUpdateDetected(false, latestCommit);
     }
+    setJustUpdatedFeedback(true);
+    setTimeout(() => setJustUpdatedFeedback(false), 3000);
   };
+
+  // Keyboard shortcut listener for 'Y' / 'y' key when modal is open
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return;
+      }
+
+      if (e.key === 'y' || e.key === 'Y' || e.key === 'ט') {
+        e.preventDefault();
+        applyUpdateNow();
+      } else if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, latestCommit]);
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-xl bg-[#141417] border border-white/15 rounded-2xl shadow-2xl overflow-hidden flex flex-col text-[#E0E0E0]">
+      <div className="relative w-full max-w-xl bg-[#141417] border border-cyan-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col text-[#E0E0E0]">
         
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
@@ -165,13 +202,13 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
                 )}
               </h2>
               <p className="text-xs text-gray-400">
-                {isHe ? 'עדכון הפרויקט בלחיצת כפתור במחשב לאחר עריכה בצ\'ט' : '1-click update workflow on your local machine'}
+                {isHe ? 'עדכון מהיר בלחיצה אחת או בלחיצה על מקש Y' : '1-click update workflow or press [Y] key'}
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+            className="p-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X size={18} />
           </button>
@@ -180,6 +217,41 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
         {/* Modal Body */}
         <div className="p-6 flex flex-col gap-5 max-h-[80vh] overflow-y-auto custom-scrollbar">
           
+          {/* Main Action Banner: Press Y to Update */}
+          <div className="p-4 rounded-xl bg-gradient-to-r from-cyan-950/60 via-indigo-950/60 to-purple-950/60 border border-cyan-500/40 shadow-xl flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-300 font-mono font-black text-lg shadow-inner">
+                Y
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-black text-white flex items-center gap-1.5">
+                  <Zap size={13} className="text-yellow-400" />
+                  <span>{isHe ? 'לחץ על מקש [Y] לעדכון מיידי' : 'Press [Y] Key for Instant Update'}</span>
+                </div>
+                <div className="text-[10px] text-cyan-300/80 truncate">
+                  {isHe ? 'מעדכן את גרסת הפרויקט ומעתיק את פקודת העדכון למחשב' : 'Syncs project version & copies update command'}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={applyUpdateNow}
+              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-lg shadow-md shadow-cyan-500/20 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95"
+            >
+              {justUpdatedFeedback ? (
+                <>
+                  <Check size={14} className="text-black" />
+                  <span>{isHe ? 'מעודכן!' : 'Updated!'}</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={13} />
+                  <span>{isHe ? 'עדכן עכשיו [Y]' : 'Update Now [Y]'}</span>
+                </>
+              )}
+            </button>
+          </div>
+
           {/* GitHub Repo Selector / Config */}
           <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex flex-col gap-3">
             <label className="text-xs font-bold text-gray-300 flex items-center justify-between">
@@ -197,10 +269,10 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
               <button
                 onClick={() => checkForUpdates(repoInput)}
                 disabled={isLoading}
-                className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all disabled:opacity-50"
+                className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
               >
                 <RefreshCw size={13} className={isLoading ? "animate-spin" : ""} />
-                <span>{isHe ? 'בדוק עכשיו' : 'Check Now'}</span>
+                <span>{isHe ? 'בדוק עדכונים' : 'Check Now'}</span>
               </button>
             </div>
           </div>
@@ -257,20 +329,6 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
                   </span>
                 </div>
               </div>
-
-              {hasNewUpdate && (
-                <div className="mt-3 flex items-center justify-between pt-2 border-t border-cyan-500/20">
-                  <span className="text-[11px] text-cyan-200">
-                    {isHe ? 'כדי לעדכן את המחשב שלך כעת:' : 'To update your local computer now:'}
-                  </span>
-                  <button
-                    onClick={markAsUpToDate}
-                    className="text-[10px] text-gray-400 hover:text-white underline transition-colors"
-                  >
-                    {isHe ? 'סמן כמעודכן מקומית' : 'Mark as updated'}
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
@@ -319,7 +377,7 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
                   <span>npm run update</span>
                   <button
                     onClick={() => copyUpdateCommand('npm run update')}
-                    className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded text-[10px] flex items-center gap-1 transition-all"
+                    className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded text-[10px] flex items-center gap-1 transition-all cursor-pointer"
                   >
                     {copiedCmd ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
                     <span>{copiedCmd ? (isHe ? 'הועתק!' : 'Copied!') : (isHe ? 'העתק' : 'Copy')}</span>
@@ -337,8 +395,8 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
                 {isHe ? 'זרימת העבודה המושלמת שלכם:' : 'Your Seamless Workflow:'}
               </strong>
               {isHe 
-                ? '1. מבצעים שיפורים וסגנונות חדשים בצ\'ט 💬 -> 2. דוחפים לגטאהב (Export/Push to GitHub) 🚀 -> 3. לוחצים על update.bat במחשב שלכם 💻 -> הפרויקט מתעדכן תוך שניות!'
-                : '1. Chat & build improvements 💬 -> 2. Export/Push to GitHub 🚀 -> 3. Run update.bat on your PC 💻 -> Visualizer updates in seconds!'}
+                ? '1. מבצעים שיפורים וסגנונות חדשים בצ\'ט 💬 -> 2. דוחפים לגטאהב (Export/Push to GitHub) 🚀 -> 3. לוחצים על מקש Y או על update.bat במחשב 💻 -> הפרויקט מתעדכן תוך שניות!'
+                : '1. Chat & build improvements 💬 -> 2. Export/Push to GitHub 🚀 -> 3. Press [Y] or run update.bat on PC 💻 -> Visualizer updates in seconds!'}
             </div>
           </div>
 
@@ -351,7 +409,7 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="px-5 py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-black font-bold text-xs rounded-xl shadow-lg shadow-cyan-500/20 transition-all"
+            className="px-5 py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-black font-bold text-xs rounded-xl shadow-lg shadow-cyan-500/20 transition-all cursor-pointer"
           >
             {isHe ? 'סגור' : 'Close'}
           </button>

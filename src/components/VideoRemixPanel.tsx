@@ -19,43 +19,78 @@ export interface VideoRemixSettings {
   strobeOnDrop: boolean;
 }
 
-interface VideoRemixPanelProps {
+export const defaultVideoRemixSettings: VideoRemixSettings = {
+  speedSensitivity: 1.4,
+  minSpeed: 0.2,
+  maxSpeed: 3.5,
+  invertReactivity: false,
+  freqDriver: 'bass',
+  smoothing: 0.35,
+  endBehavior: 'cut_at_video',
+  videoFit: 'cover',
+  strobeOnDrop: true
+};
+
+export interface VideoRemixPanelProps {
   lang: Language;
-  videoFile: File | null;
-  videoUrl: string | null;
-  videoDimensions: { width: number; height: number } | null;
-  videoDuration: number;
-  currentVideoSpeed: number;
-  settings: VideoRemixSettings;
-  setSettings: React.Dispatch<React.SetStateAction<VideoRemixSettings>>;
+  videoFile?: File | null;
+  videoUrl?: string | null;
+  videoDimensions?: { width: number; height: number } | null;
+  videoDuration?: number;
+  currentSpeed?: number;
+  currentVideoSpeed?: number;
+  settings?: VideoRemixSettings;
+  setSettings?: React.Dispatch<React.SetStateAction<VideoRemixSettings>>;
+  onUpdateSettings?: (settings: Partial<VideoRemixSettings>) => void;
   onUploadVideo: (file: File) => void;
   onLoadDemoVideo: () => void;
-  isLoadingDemo: boolean;
-  onMatchVideoDimensions: () => void;
-  isExporting: boolean;
-  isActiveStyle: boolean;
-  onSelectVideoStyle: () => void;
+  isLoadingDemo?: boolean;
+  isLoadingDemoVideo?: boolean;
+  onMatchDimensions?: () => void;
+  onMatchVideoDimensions?: () => void;
+  isExporting?: boolean;
+  isActiveStyle?: boolean;
+  onSelectVideoStyle?: () => void;
 }
 
 export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
   lang,
-  videoFile,
-  videoUrl,
-  videoDimensions,
-  videoDuration,
+  videoFile = null,
+  videoUrl = null,
+  videoDimensions = null,
+  videoDuration = 0,
+  currentSpeed,
   currentVideoSpeed,
-  settings,
+  settings = defaultVideoRemixSettings,
   setSettings,
+  onUpdateSettings,
   onUploadVideo,
   onLoadDemoVideo,
-  isLoadingDemo,
+  isLoadingDemo = false,
+  isLoadingDemoVideo = false,
+  onMatchDimensions,
   onMatchVideoDimensions,
-  isExporting,
-  isActiveStyle,
+  isExporting = false,
+  isActiveStyle = true,
   onSelectVideoStyle
 }) => {
   const isHe = lang === 'he';
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Safe fallback values
+  const effectiveSpeed = typeof currentSpeed === 'number' 
+    ? currentSpeed 
+    : typeof currentVideoSpeed === 'number' 
+    ? currentVideoSpeed 
+    : 1.0;
+
+  const effectiveLoading = isLoadingDemo || isLoadingDemoVideo;
+  const handleMatchDims = onMatchDimensions || onMatchVideoDimensions || (() => {});
+
+  const currentSettings: VideoRemixSettings = {
+    ...defaultVideoRemixSettings,
+    ...(settings || {})
+  };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -74,7 +109,11 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
   };
 
   const updateSetting = <K extends keyof VideoRemixSettings>(key: K, val: VideoRemixSettings[K]) => {
-    setSettings(prev => ({ ...prev, [key]: val }));
+    if (onUpdateSettings) {
+      onUpdateSettings({ [key]: val });
+    } else if (setSettings) {
+      setSettings(prev => ({ ...prev, [key]: val }));
+    }
   };
 
   const formatSec = (secs: number) => {
@@ -83,6 +122,12 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
     const s = Math.floor(secs % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
+
+  const minSpd = currentSettings.minSpeed ?? 0.2;
+  const maxSpd = currentSettings.maxSpeed ?? 3.5;
+  const speedRatio = maxSpd > minSpd 
+    ? ((effectiveSpeed - minSpd) / (maxSpd - minSpd)) * 100 
+    : 50;
 
   return (
     <div className="space-y-4 text-xs">
@@ -119,7 +164,7 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isExporting}
-            className="p-2.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold flex flex-col items-center justify-center gap-1 transition-all text-center group active:scale-95"
+            className="p-2.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold flex flex-col items-center justify-center gap-1 transition-all text-center group active:scale-95 cursor-pointer"
           >
             <Upload size={16} className="group-hover:-translate-y-0.5 transition-transform" />
             <span className="text-[11px]">{isHe ? 'העלה סרטון וידאו' : 'Upload Video File'}</span>
@@ -128,11 +173,15 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
 
           <button
             onClick={onLoadDemoVideo}
-            disabled={isExporting || isLoadingDemo}
-            className="p-2.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-bold flex flex-col items-center justify-center gap-1 transition-all text-center group active:scale-95"
+            disabled={isExporting || effectiveLoading}
+            className="p-2.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-bold flex flex-col items-center justify-center gap-1 transition-all text-center group active:scale-95 cursor-pointer"
           >
-            <Sparkles size={16} className={`group-hover:rotate-12 transition-transform ${isLoadingDemo ? 'animate-spin' : ''}`} />
-            <span className="text-[11px]">{isLoadingDemo ? (isHe ? 'מייצר קטע דמו...' : 'Generating...') : (isHe ? 'טען וידאו דמו VJ' : 'Load Demo VJ Clip')}</span>
+            <Sparkles size={16} className={`group-hover:rotate-12 transition-transform ${effectiveLoading ? 'animate-spin' : ''}`} />
+            <span className="text-[11px]">
+              {effectiveLoading 
+                ? (isHe ? 'מייצר קטע דמו...' : 'Generating...') 
+                : (isHe ? 'טען וידאו דמו VJ' : 'Load Demo VJ Clip')}
+            </span>
             <span className="text-[8px] text-indigo-400/60 font-mono">3D Cyber Tunnel Loop</span>
           </button>
         </div>
@@ -148,8 +197,8 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
             <div className="flex items-center justify-between text-[9px] text-gray-400">
               <span>{isHe ? 'משך הוידאו:' : 'Duration:'} <strong className="text-white font-mono">{formatSec(videoDuration)}</strong></span>
               <button
-                onClick={onMatchVideoDimensions}
-                className="px-2 py-1 rounded bg-white/10 hover:bg-cyan-500/20 hover:text-cyan-300 text-gray-300 border border-white/10 transition-colors flex items-center gap-1"
+                onClick={handleMatchDims}
+                className="px-2 py-1 rounded bg-white/10 hover:bg-cyan-500/20 hover:text-cyan-300 text-gray-300 border border-white/10 transition-colors flex items-center gap-1 cursor-pointer"
                 title={isHe ? 'התאם את רזולוציית הייצוא והפרופורציות לוידאו זה' : 'Auto-match export resolution and aspect ratio to this video'}
               >
                 <Maximize2 size={10} />
@@ -160,10 +209,10 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         )}
 
         {/* Activate Video Style Button if not active */}
-        {!isActiveStyle && videoUrl && (
+        {!isActiveStyle && videoUrl && onSelectVideoStyle && (
           <button
             onClick={onSelectVideoStyle}
-            className="w-full py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:brightness-110 text-white font-black text-[11px] rounded-lg shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-2"
+            className="w-full py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:brightness-110 text-white font-black text-[11px] rounded-lg shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <Film size={14} />
             <span>{isHe ? 'הפעל סגנון רמיקס וידאו במסך הראשי' : 'Switch Canvas to Video Remix Style'}</span>
@@ -179,13 +228,13 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
             {isHe ? 'מהירות תנועה חיה (Live Speed)' : 'Live Dynamic Video Speed'}
           </span>
           <span className={`font-mono text-sm font-black px-2 py-0.5 rounded border ${
-            currentVideoSpeed > 2.2 
+            effectiveSpeed > 2.2 
               ? 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/40 shadow-sm shadow-fuchsia-500/20' 
-              : currentVideoSpeed < 0.6 
+              : effectiveSpeed < 0.6 
               ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' 
               : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40'
           }`}>
-            {currentVideoSpeed.toFixed(2)}x
+            {effectiveSpeed.toFixed(2)}x
           </span>
         </div>
 
@@ -194,19 +243,19 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
           <div 
             className="absolute h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 rounded-full transition-all duration-75"
             style={{ 
-              width: `${Math.min(100, Math.max(5, ((currentVideoSpeed - settings.minSpeed) / (settings.maxSpeed - settings.minSpeed || 1)) * 100))}%` 
+              width: `${Math.min(100, Math.max(5, speedRatio))}%` 
             }}
           />
         </div>
 
         <div className="flex items-center justify-between text-[9px] font-mono text-gray-500">
-          <span>{settings.minSpeed.toFixed(2)}x ({isHe ? 'שקט / איטי' : 'Low/Slow'})</span>
+          <span>{minSpd.toFixed(2)}x ({isHe ? 'שקט / איטי' : 'Low/Slow'})</span>
           <span className="text-cyan-400/80">
-            {settings.invertReactivity 
+            {currentSettings.invertReactivity 
               ? (isHe ? '⚡ מצב הפוך: נמוכים מהר / גבוהים לאט' : '⚡ Inverted: Lows Fast / Highs Slow') 
               : (isHe ? '🎵 מצב רגיל: נמוכים לאט / גבוהים מהר' : '🎵 Normal: Lows Slow / Highs Fast')}
           </span>
-          <span>{settings.maxSpeed.toFixed(1)}x ({isHe ? 'שיא / טורבו' : 'High/Peak'})</span>
+          <span>{maxSpd.toFixed(1)}x ({isHe ? 'שיא / טורבו' : 'High/Peak'})</span>
         </div>
       </div>
 
@@ -221,31 +270,31 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
 
         {/* Invert Speed Toggle */}
         <button
-          onClick={() => updateSetting('invertReactivity', !settings.invertReactivity)}
+          onClick={() => updateSetting('invertReactivity', !currentSettings.invertReactivity)}
           disabled={isExporting}
-          className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-            settings.invertReactivity 
+          className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all cursor-pointer ${
+            currentSettings.invertReactivity 
               ? 'bg-amber-500/20 border-amber-500/50 text-amber-200 shadow-md shadow-amber-500/10' 
               : 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
           }`}
         >
           <div className="flex items-center gap-2">
-            <ArrowLeftRight size={15} className={settings.invertReactivity ? 'text-amber-400' : 'text-cyan-400'} />
+            <ArrowLeftRight size={15} className={currentSettings.invertReactivity ? 'text-amber-400' : 'text-cyan-400'} />
             <div>
               <div className="text-xs font-bold">
-                {settings.invertReactivity 
+                {currentSettings.invertReactivity 
                   ? (isHe ? 'מצב הפוך: בנמוכים מהר, בגבוהים לאט' : 'Inverted: Lows Fast, Highs Slow') 
                   : (isHe ? 'מצב רגיל: בנמוכים לאט, בגבוהים מהר' : 'Normal: Lows Slow, Highs Fast')}
               </div>
               <div className="text-[9px] opacity-70 mt-0.5">
                 {isHe 
-                  ? (settings.invertReactivity ? 'הוידאו טס בבסים ובשקט ומאט בשיאי הטראק' : 'הוידאו זז לאט בשקט/בסים ומאיץ בעוצמה גבוהה ודרופים') 
-                  : (settings.invertReactivity ? 'Video accelerates on bass/quiet and slows on peaks' : 'Video moves in slow-mo on quiet/lows and turbo on beats')}
+                  ? (currentSettings.invertReactivity ? 'הוידאו טס בבסים ובשקט ומאט בשיאי הטראק' : 'הוידאו זז לאט בשקט/בסים ומאיץ בעוצמה גבוהה ודרופים') 
+                  : (currentSettings.invertReactivity ? 'Video accelerates on bass/quiet and slows on peaks' : 'Video moves in slow-mo on quiet/lows and turbo on beats')}
               </div>
             </div>
           </div>
           <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40 border border-white/10 shrink-0">
-            {settings.invertReactivity ? (isHe ? 'הפוך' : 'INVERT') : (isHe ? 'רגיל' : 'NORMAL')}
+            {currentSettings.invertReactivity ? (isHe ? 'הפוך' : 'INVERT') : (isHe ? 'רגיל' : 'NORMAL')}
           </span>
         </button>
 
@@ -265,8 +314,8 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
                 key={b.id}
                 onClick={() => updateSetting('freqDriver', b.id as any)}
                 disabled={isExporting}
-                className={`py-1.5 px-1 rounded-lg text-center border transition-all ${
-                  settings.freqDriver === b.id 
+                className={`py-1.5 px-1 rounded-lg text-center border transition-all cursor-pointer ${
+                  currentSettings.freqDriver === b.id 
                     ? 'bg-cyan-500 text-black font-black border-cyan-400 shadow-sm' 
                     : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
                 }`}
@@ -290,14 +339,14 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         <div className="space-y-1">
           <div className="flex justify-between items-center text-[10px]">
             <span className="text-gray-300">{isHe ? 'עוצמת תגובתיות המהירות (Intensity)' : 'Speed Reactivity Sensitivity'}</span>
-            <span className="font-mono text-cyan-400 font-bold">{settings.speedSensitivity.toFixed(1)}x</span>
+            <span className="font-mono text-cyan-400 font-bold">{(currentSettings.speedSensitivity ?? 1.4).toFixed(1)}x</span>
           </div>
           <input 
             type="range" 
             min="0.3" 
             max="3.5" 
             step="0.1" 
-            value={settings.speedSensitivity} 
+            value={currentSettings.speedSensitivity ?? 1.4} 
             onChange={e => updateSetting('speedSensitivity', parseFloat(e.target.value))} 
             className="w-full accent-cyan-500 h-1 bg-white/10 rounded-lg cursor-pointer" 
             disabled={isExporting}
@@ -308,14 +357,14 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         <div className="space-y-1">
           <div className="flex justify-between items-center text-[10px]">
             <span className="text-gray-300">{isHe ? 'מהירות מינימלית (איטי / Lows)' : 'Minimum Speed (Slow-mo)'}</span>
-            <span className="font-mono text-cyan-400 font-bold">{settings.minSpeed.toFixed(2)}x</span>
+            <span className="font-mono text-cyan-400 font-bold">{minSpd.toFixed(2)}x</span>
           </div>
           <input 
             type="range" 
             min="0.05" 
             max="1.2" 
             step="0.05" 
-            value={settings.minSpeed} 
+            value={minSpd} 
             onChange={e => updateSetting('minSpeed', parseFloat(e.target.value))} 
             className="w-full accent-cyan-500 h-1 bg-white/10 rounded-lg cursor-pointer" 
             disabled={isExporting}
@@ -326,14 +375,14 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         <div className="space-y-1">
           <div className="flex justify-between items-center text-[10px]">
             <span className="text-gray-300">{isHe ? 'מהירות מקסימלית (טורבו / Highs)' : 'Maximum Speed (Turbo Peak)'}</span>
-            <span className="font-mono text-fuchsia-400 font-bold">{settings.maxSpeed.toFixed(1)}x</span>
+            <span className="font-mono text-fuchsia-400 font-bold">{maxSpd.toFixed(1)}x</span>
           </div>
           <input 
             type="range" 
             min="1.2" 
             max="6.0" 
             step="0.2" 
-            value={settings.maxSpeed} 
+            value={maxSpd} 
             onChange={e => updateSetting('maxSpeed', parseFloat(e.target.value))} 
             className="w-full accent-fuchsia-500 h-1 bg-white/10 rounded-lg cursor-pointer" 
             disabled={isExporting}
@@ -344,18 +393,35 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
         <div className="space-y-1">
           <div className="flex justify-between items-center text-[10px]">
             <span className="text-gray-300">{isHe ? 'החלקת מעברי מהירות (Smoothing)' : 'Speed Transition Smoothing'}</span>
-            <span className="font-mono text-indigo-400 font-bold">{Math.round(settings.smoothing * 100)}%</span>
+            <span className="font-mono text-indigo-400 font-bold">{Math.round((currentSettings.smoothing ?? 0.35) * 100)}%</span>
           </div>
           <input 
             type="range" 
             min="0.05" 
             max="0.8" 
             step="0.05" 
-            value={settings.smoothing} 
+            value={currentSettings.smoothing ?? 0.35} 
             onChange={e => updateSetting('smoothing', parseFloat(e.target.value))} 
             className="w-full accent-indigo-500 h-1 bg-white/10 rounded-lg cursor-pointer" 
             disabled={isExporting}
           />
+        </div>
+
+        {/* Strobe on drop flash toggle */}
+        <div className="pt-2 border-t border-white/5">
+          <label className="flex items-center justify-between cursor-pointer group">
+            <span className="text-[11px] text-gray-300 group-hover:text-white flex items-center gap-1.5 transition-colors">
+              <Zap size={12} className={currentSettings.strobeOnDrop ? "text-yellow-400" : "text-gray-500"} />
+              {isHe ? 'אפקט פלאש / דרופ בביטים חזקים' : 'Beat Drop Strobe Flash'}
+            </span>
+            <input 
+              type="checkbox"
+              checked={currentSettings.strobeOnDrop ?? true}
+              onChange={e => updateSetting('strobeOnDrop', e.target.checked)}
+              className="w-4 h-4 rounded accent-yellow-400 cursor-pointer shrink-0"
+              disabled={isExporting}
+            />
+          </label>
         </div>
       </div>
 
@@ -379,8 +445,8 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
           <button
             onClick={() => updateSetting('endBehavior', 'cut_at_video')}
             disabled={isExporting}
-            className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-              settings.endBehavior === 'cut_at_video' 
+            className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all cursor-pointer ${
+              currentSettings.endBehavior === 'cut_at_video' 
                 ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-200' 
                 : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
             }`}
@@ -394,15 +460,15 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
                 {isHe ? 'הייצוא נעצר בדיוק בסוף הסרטון, ללא מסך שחור!' : 'Export cleanly finishes when video ends, preventing any blank black screen.'}
               </div>
             </div>
-            {settings.endBehavior === 'cut_at_video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+            {currentSettings.endBehavior === 'cut_at_video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
           </button>
 
           {/* Option B: Seamless video loop */}
           <button
             onClick={() => updateSetting('endBehavior', 'loop_video')}
             disabled={isExporting}
-            className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-              settings.endBehavior === 'loop_video' 
+            className={`w-full p-2.5 rounded-lg border text-start flex items-center justify-between transition-all cursor-pointer ${
+              currentSettings.endBehavior === 'loop_video' 
                 ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200' 
                 : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
             }`}
@@ -416,7 +482,7 @@ export const VideoRemixPanel: React.FC<VideoRemixPanelProps> = ({
                 {isHe ? 'הוידאו ממשיך בלולאה חלקה עד שהשיר מסתיים' : 'Video continuously loops until the audio track is finished.'}
               </div>
             </div>
-            {settings.endBehavior === 'loop_video' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
+            {currentSettings.endBehavior === 'loop_video' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
           </button>
         </div>
       </div>
