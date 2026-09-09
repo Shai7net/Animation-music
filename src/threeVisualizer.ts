@@ -40,11 +40,25 @@ export function cleanupThreeScene(scene: THREE.Scene, renderer: THREE.WebGLRende
       }
     });
     scene.clear();
-    renderer.dispose();
-    renderer.forceContextLoss?.();
+    if (renderer && typeof renderer.dispose === 'function') {
+      renderer.dispose();
+    }
   } catch (err) {
     console.warn('Three.js scene cleanup warning:', err);
   }
+}
+
+export function getAspect(canvas: HTMLCanvasElement): number {
+  return (canvas.width > 0 && canvas.height > 0) ? (canvas.width / canvas.height) : (16 / 9);
+}
+
+export function initSceneRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
+  const w = canvas.width || 1280;
+  const h = canvas.height || 720;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(w, h, false);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  return renderer;
 }
 
 // 1. Cyberpunk 3D Flight & Infinite Grid
@@ -52,12 +66,10 @@ export function createCyberDiveScene(canvas: HTMLCanvasElement): ThreeSceneInsta
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x050014, 0.0018);
 
-  const camera = new THREE.PerspectiveCamera(65, canvas.width / canvas.height, 0.1, 2000);
+  const camera = new THREE.PerspectiveCamera(65, getAspect(canvas), 0.1, 2000);
   camera.position.set(0, 30, 120);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   const ambLight = new THREE.AmbientLight(0x222244, 1.5);
   scene.add(ambLight);
@@ -205,12 +217,10 @@ export function createCyberDiveScene(canvas: HTMLCanvasElement): ThreeSceneInsta
 // 2. Cosmic Particle Nebula & Spiral Galaxy
 export function createGalaxyParticleScene(canvas: HTMLCanvasElement): ThreeSceneInstance {
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(70, canvas.width / canvas.height, 0.1, 3000);
+  const camera = new THREE.PerspectiveCamera(70, getAspect(canvas), 0.1, 3000);
   camera.position.set(0, 50, 160);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   const particleCount = 4500;
   const geometry = new THREE.BufferGeometry();
@@ -360,12 +370,10 @@ export function createMonolithArenaScene(canvas: HTMLCanvasElement): ThreeSceneI
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x0a0a14, 0.0025);
 
-  const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1500);
+  const camera = new THREE.PerspectiveCamera(60, getAspect(canvas), 0.1, 1500);
   camera.position.set(0, 25, 110);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   const ambLight = new THREE.AmbientLight(0x111122, 2.0);
   scene.add(ambLight);
@@ -508,12 +516,10 @@ export function createSynthwaveHorizonScene(canvas: HTMLCanvasElement): ThreeSce
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x1a0033, 0.0015);
 
-  const camera = new THREE.PerspectiveCamera(65, canvas.width / canvas.height, 0.1, 2000);
+  const camera = new THREE.PerspectiveCamera(65, getAspect(canvas), 0.1, 2000);
   camera.position.set(0, 20, 100);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   // Audio-reactive terrain grid
   const terrainWidth = 600;
@@ -662,12 +668,10 @@ export function createHyperdriveTunnelScene(canvas: HTMLCanvasElement): ThreeSce
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x00020a, 0.002);
 
-  const camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 3000);
+  const camera = new THREE.PerspectiveCamera(75, getAspect(canvas), 0.1, 3000);
   camera.position.set(0, 0, 0);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   // Geometric Rings Tunnel
   const ringCount = 60;
@@ -799,12 +803,10 @@ export function createHyperdriveTunnelScene(canvas: HTMLCanvasElement): ThreeSce
 // 6. NEW: Liquid Audio Sphere (Ferrofluid Blob)
 export function createLiquidBlobScene(canvas: HTMLCanvasElement): ThreeSceneInstance {
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000);
+  const camera = new THREE.PerspectiveCamera(60, getAspect(canvas), 0.1, 1000);
   camera.position.set(0, 0, 90);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(canvas.width, canvas.height, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const renderer = initSceneRenderer(canvas);
 
   const ambLight = new THREE.AmbientLight(0x330066, 2.0);
   scene.add(ambLight);

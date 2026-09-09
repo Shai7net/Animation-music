@@ -171,10 +171,22 @@ export default function App() {
     isDrop: false,
     beatIntensity: 0,
     bpm: 128,
-    vuLevel: 0
+    vuLevel: 0,
+    currentDb: -90
   });
   const [bands, setBands] = useState<AudioBands>({
-    subBass: 0, bass: 0, lowMid: 0, mid: 0, highMid: 0, treble: 0, overallEnergy: 0
+    subBass: 0,
+    bass: 0,
+    lowMid: 0,
+    mid: 0,
+    highMid: 0,
+    treble: 0,
+    overallEnergy: 0,
+    rmsDb: -90,
+    peakDb: -90,
+    gatedEnergy: 0,
+    isSilent: true,
+    perceivedLoudness: 0
   });
 
   const t = i18n[lang];
@@ -344,7 +356,7 @@ export default function App() {
         cb.removeEventListener('webglcontextrestored', handleContextRestored);
       }
     };
-  }, [updateCanvasSizes]);
+  }, []);
 
   // Audio FX adjustments
   useEffect(() => {
@@ -363,32 +375,49 @@ export default function App() {
 
     if (currentBase.engine === 'three' && canvasThreeRef.current) {
       if (threeInstanceRef.current) {
-        threeInstanceRef.current.destroy();
+        try {
+          threeInstanceRef.current.destroy();
+        } catch (e) {}
         threeInstanceRef.current = null;
       }
 
       updateCanvasSizes();
 
-      if (currentBase.threeType === 'cyber_city') {
-        threeInstanceRef.current = createCyberDiveScene(canvasThreeRef.current);
-      } else if (currentBase.threeType === 'synthwave_horizon') {
-        threeInstanceRef.current = createSynthwaveHorizonScene(canvasThreeRef.current);
-      } else if (currentBase.threeType === 'hyperdrive_tunnel') {
-        threeInstanceRef.current = createHyperdriveTunnelScene(canvasThreeRef.current);
-      } else if (currentBase.threeType === 'liquid_blob') {
-        threeInstanceRef.current = createLiquidBlobScene(canvasThreeRef.current);
-      } else if (currentBase.threeType === 'galaxy') {
-        threeInstanceRef.current = createGalaxyParticleScene(canvasThreeRef.current);
-      } else if (currentBase.threeType === 'monolith') {
-        threeInstanceRef.current = createMonolithArenaScene(canvasThreeRef.current);
+      try {
+        if (currentBase.threeType === 'cyber_city') {
+          threeInstanceRef.current = createCyberDiveScene(canvasThreeRef.current);
+        } else if (currentBase.threeType === 'synthwave_horizon') {
+          threeInstanceRef.current = createSynthwaveHorizonScene(canvasThreeRef.current);
+        } else if (currentBase.threeType === 'hyperdrive_tunnel') {
+          threeInstanceRef.current = createHyperdriveTunnelScene(canvasThreeRef.current);
+        } else if (currentBase.threeType === 'liquid_blob') {
+          threeInstanceRef.current = createLiquidBlobScene(canvasThreeRef.current);
+        } else if (currentBase.threeType === 'galaxy') {
+          threeInstanceRef.current = createGalaxyParticleScene(canvasThreeRef.current);
+        } else if (currentBase.threeType === 'monolith') {
+          threeInstanceRef.current = createMonolithArenaScene(canvasThreeRef.current);
+        }
+      } catch (err) {
+        console.error('Three.js scene creation error:', err);
       }
     } else {
       if (threeInstanceRef.current) {
-        threeInstanceRef.current.destroy();
+        try {
+          threeInstanceRef.current.destroy();
+        } catch (e) {}
         threeInstanceRef.current = null;
       }
     }
-  }, [activeStyleId, isDualLayerEnabled, layer1Id, updateCanvasSizes]);
+
+    return () => {
+      if (threeInstanceRef.current) {
+        try {
+          threeInstanceRef.current.destroy();
+        } catch (e) {}
+        threeInstanceRef.current = null;
+      }
+    };
+  }, [activeStyleId, isDualLayerEnabled, layer1Id]);
 
   // Init Butterchurn when switching to Butterchurn style
   useEffect(() => {
@@ -417,46 +446,50 @@ export default function App() {
 
   // Animation render loop
   const loop = useCallback((time: number) => {
-    const frameStartTime = performance.now();
-    const isLive = isExportingRef.current || isPlayingRef.current || isMicActive;
-    
-    // Telemetry: measure live FPS and GPU frame time
-    frameCountRef.current++;
-    const nowMs = performance.now();
-    const elapsedFps = nowMs - lastFpsTimestampRef.current;
-    if (elapsedFps >= 500) {
-      const fps = Math.round((frameCountRef.current * 1000) / elapsedFps);
-      setLiveFps(fps);
-      setRenderTimeMs(parseFloat((nowMs - frameStartTime).toFixed(1)));
-      frameCountRef.current = 0;
-      lastFpsTimestampRef.current = nowMs;
-    }
-    
-    if (isLive) {
-      const dsp = audioEngineRef.current.analyze();
-
-      // Desktop Engine Optimization: Throttle React UI State updates to ~20 FPS (every 50ms)
-      // This prevents React from thrashing the DOM 60-120 times/sec and completely eliminates browser lag/flicker.
+    try {
+      const frameStartTime = performance.now();
+      const isLive = isExportingRef.current || isPlayingRef.current || isMicActive;
+      
+      // Telemetry: measure live FPS and GPU frame time
+      frameCountRef.current++;
       const nowMs = performance.now();
-      if (nowMs - lastUiUpdateRef.current > 50) {
-        lastUiUpdateRef.current = nowMs;
-        setBeatState(dsp.beat);
-        setBands(dsp.bands);
-        if (audioRef.current && !isExportingRef.current) {
-          setCurrentTime(audioRef.current.currentTime);
+      const elapsedFps = nowMs - lastFpsTimestampRef.current;
+      if (elapsedFps >= 500) {
+        const fps = Math.round((frameCountRef.current * 1000) / elapsedFps);
+        setLiveFps(fps);
+        setRenderTimeMs(parseFloat((nowMs - frameStartTime).toFixed(1)));
+        frameCountRef.current = 0;
+        lastFpsTimestampRef.current = nowMs;
+      }
+      
+      const dsp = isLive ? audioEngineRef.current.analyze() : {
+        beat: { isBeat: false, isDrop: false, bpm: 0, beatIntensity: 0, timeSinceLastBeat: 0 },
+        bands: { subBass: 0, bass: 0, lowMid: 0, mid: 0, highMid: 0, treble: 0, brilliance: 0, overallEnergy: 0 }
+      };
+
+      if (isLive) {
+        // Desktop Engine Optimization: Throttle React UI State updates to ~20 FPS (every 50ms)
+        // This prevents React from thrashing the DOM 60-120 times/sec and completely eliminates browser lag/flicker.
+        if (nowMs - lastUiUpdateRef.current > 50) {
+          lastUiUpdateRef.current = nowMs;
+          setBeatState(dsp.beat);
+          setBands(dsp.bands);
+          if (audioRef.current && !isExportingRef.current) {
+            setCurrentTime(audioRef.current.currentTime);
+          }
         }
       }
 
       const masterInt = intensityRef.current;
-      const rawFreq = audioEngineRef.current.freqData;
-      const rawTime = audioEngineRef.current.timeData;
+      const rawFreq = audioEngineRef.current?.freqData || new Uint8Array(1024);
+      const rawTime = audioEngineRef.current?.timeData || new Uint8Array(1024).fill(128);
 
       const isDual = isDualLayerEnabledRef.current;
       const l1Sensitivity = isDual ? (layer1IntensityRef.current || 1.0) : 1.0;
       const l2Sensitivity = isDual ? (layer2IntensityRef.current || 1.2) : 1.0;
 
-      const int1 = masterInt * l1Sensitivity;
-      const int2 = masterInt * l2Sensitivity;
+      const int1 = isLive ? (masterInt * l1Sensitivity) : 0.6;
+      const int2 = isLive ? (masterInt * l2Sensitivity) : 0.6;
 
       // Reusable zero-allocation typed buffers for Layer 1 & 2
       if (!scaledFreq1Ref.current || scaledFreq1Ref.current.length !== rawFreq.length) {
@@ -471,14 +504,16 @@ export default function App() {
       const scaledTime2 = scaledTime2Ref.current;
 
       for (let i = 0; i < rawFreq.length; i++) {
-        scaledFreq1[i] = Math.min(255, rawFreq[i] * int1);
+        const idlePulse = isLive ? 0 : Math.sin(time * 0.0015 + i * 0.04) * 12 + 15;
+        scaledFreq1[i] = Math.min(255, isLive ? (rawFreq[i] * int1) : idlePulse);
         const tDiff = rawTime[i] - 128;
         scaledTime1[i] = Math.max(0, Math.min(255, 128 + tDiff * int1));
       }
 
       if (isDual) {
         for (let i = 0; i < rawFreq.length; i++) {
-          scaledFreq2[i] = Math.min(255, rawFreq[i] * int2);
+          const idlePulse = isLive ? 0 : Math.cos(time * 0.0015 + i * 0.04) * 12 + 15;
+          scaledFreq2[i] = Math.min(255, isLive ? (rawFreq[i] * int2) : idlePulse);
           const tDiff = rawTime[i] - 128;
           scaledTime2[i] = Math.max(0, Math.min(255, 128 + tDiff * int2));
         }
@@ -583,11 +618,19 @@ export default function App() {
 
       // 1. Three.js Engine (Base Layer 1)
       if (baseItem.engine === 'three' && threeInstanceRef.current) {
-        threeInstanceRef.current.update(scaledFreq1, scaledTime1, time, int1);
+        try {
+          threeInstanceRef.current.update(scaledFreq1, scaledTime1, time, int1);
+        } catch (err) {
+          console.warn('Three.js update error:', err);
+        }
       }
       // 2. Butterchurn Engine (Base Layer 1)
       else if (baseItem.engine === 'butterchurn' && butterchurnInstanceRef.current) {
-        butterchurnInstanceRef.current.render();
+        try {
+          butterchurnInstanceRef.current.render();
+        } catch (err) {
+          console.warn('Butterchurn render error:', err);
+        }
       }
       // 3. Video Remix Engine (Base Layer 1)
       else if (baseItem.engine === 'video' && canvas2DRef.current) {
@@ -650,16 +693,20 @@ export default function App() {
       else if (baseItem.engine === '2d' && canvas2DRef.current) {
         const ctx = canvas2DRef.current.getContext('2d');
         if (ctx) {
-          const viz = visualizers.find(v => v.id === baseItem.id) || visualizers[0];
-          viz.draw(
-            ctx, 
-            canvas2DRef.current.width, 
-            canvas2DRef.current.height, 
-            scaledFreq1, 
-            scaledTime1, 
-            time, 
-            { hideBackground: hideStageBackgroundRef.current }
-          );
+          try {
+            const viz = visualizers.find(v => v.id === baseItem.id) || visualizers[0];
+            viz.draw(
+              ctx, 
+              canvas2DRef.current.width, 
+              canvas2DRef.current.height, 
+              scaledFreq1, 
+              scaledTime1, 
+              time, 
+              { hideBackground: hideStageBackgroundRef.current }
+            );
+          } catch (err) {
+            console.warn('2D draw error:', err);
+          }
         }
       }
 
@@ -667,19 +714,23 @@ export default function App() {
       if (isDual && canvasOverlay2DRef.current) {
         const ctxOverlay = canvasOverlay2DRef.current.getContext('2d');
         if (ctxOverlay) {
-          const overlayId = layer2IdRef.current;
-          const overlayViz = visualizers.find(v => v.id === overlayId) || visualizers[0];
-          ctxOverlay.clearRect(0, 0, canvasOverlay2DRef.current.width, canvasOverlay2DRef.current.height);
-          const hideOverlayBg = layerTransformRef.current.hideStageBg || hideStageBackgroundRef.current;
-          overlayViz.draw(
-            ctxOverlay, 
-            canvasOverlay2DRef.current.width, 
-            canvasOverlay2DRef.current.height, 
-            scaledFreq2, 
-            scaledTime2, 
-            time, 
-            { hideBackground: hideOverlayBg }
-          );
+          try {
+            const overlayId = layer2IdRef.current;
+            const overlayViz = visualizers.find(v => v.id === overlayId) || visualizers[0];
+            ctxOverlay.clearRect(0, 0, canvasOverlay2DRef.current.width, canvasOverlay2DRef.current.height);
+            const hideOverlayBg = layerTransformRef.current.hideStageBg || hideStageBackgroundRef.current;
+            overlayViz.draw(
+              ctxOverlay, 
+              canvasOverlay2DRef.current.width, 
+              canvasOverlay2DRef.current.height, 
+              scaledFreq2, 
+              scaledTime2, 
+              time, 
+              { hideBackground: hideOverlayBg }
+            );
+          } catch (err) {
+            console.warn('Layer 2 draw error:', err);
+          }
         }
       }
 
@@ -782,9 +833,12 @@ export default function App() {
           }
         }
       }
-    }
 
-    reqRef.current = requestAnimationFrame(loop);
+    } catch (err) {
+      console.warn('Render loop frame error:', err);
+    } finally {
+      reqRef.current = requestAnimationFrame(loop);
+    }
   }, [isMicActive]);
 
   useEffect(() => {
@@ -1888,18 +1942,24 @@ ${exportPassModeRef.current === 'both'
             {/* 1. Base 2D & Video Remix Canvas */}
             <canvas 
               ref={canvas2DRef} 
+              width={1280}
+              height={720}
               className={`max-w-full max-h-full object-contain pointer-events-none ${(activeItem.engine === '2d' || activeItem.engine === 'video') ? 'block' : 'hidden'} ${bloomEffect ? 'filter drop-shadow-[0_0_15px_rgba(0,255,255,0.4)]' : ''}`} 
             />
 
             {/* 2. Base Three.js WebGL Canvas */}
             <canvas 
               ref={canvasThreeRef} 
+              width={1280}
+              height={720}
               className={`max-w-full max-h-full object-contain ${activeItem.engine === 'three' ? 'block' : 'hidden'} ${bloomEffect ? 'filter drop-shadow-[0_0_20px_rgba(120,50,255,0.3)]' : ''}`} 
             />
 
             {/* 3. Base Butterchurn WebGL Canvas */}
             <canvas 
               ref={canvasButterchurnRef} 
+              width={1280}
+              height={720}
               className={`max-w-full max-h-full object-contain pointer-events-none ${activeItem.engine === 'butterchurn' ? 'block' : 'hidden'}`} 
             />
 
@@ -1911,6 +1971,8 @@ ${exportPassModeRef.current === 'both'
               >
                 <canvas 
                   ref={canvasOverlay2DRef} 
+                  width={1280}
+                  height={720}
                   className="max-w-full max-h-full object-contain pointer-events-none transition-transform duration-75"
                   style={{
                     transform: `translate3d(${layerTransform.posX}%, ${layerTransform.posY}%, ${layerTransform.depthZ}px) rotateX(${layerTransform.rotateX}deg) rotateY(${layerTransform.rotateY}deg) rotateZ(${layerTransform.rotateZ}deg) scale(${layerTransform.scale * (layerTransform.beatReactivity && beatState.isBeat ? 1.08 + beatState.beatIntensity * 0.08 * Math.min(2.5, layer2Intensity) : 1)}) ${layerTransform.mirrorX ? 'scaleX(-1)' : ''}`,
