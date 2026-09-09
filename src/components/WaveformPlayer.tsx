@@ -9,6 +9,7 @@ interface WaveformPlayerProps {
   duration: number;
   isExporting: boolean;
   lang: 'en' | 'he';
+  onSeek?: (timeInSeconds: number) => void;
 }
 
 export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
@@ -17,7 +18,8 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   currentTime,
   duration,
   isExporting,
-  lang
+  lang,
+  onSeek
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
@@ -72,6 +74,14 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
 
       ws.on('ready', () => {
         setIsReady(true);
+      });
+
+      ws.on('seeking', (time) => {
+        if (onSeek) onSeek(time);
+      });
+
+      ws.on('interaction', (newTime) => {
+        if (onSeek) onSeek(newTime);
       });
 
       wavesurferRef.current = ws;

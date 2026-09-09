@@ -60,6 +60,8 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
   const [hasNewUpdate, setHasNewUpdate] = useState<boolean>(false);
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
   const [justUpdatedFeedback, setJustUpdatedFeedback] = useState<boolean>(false);
+  const [isUpdatingAndRestarting, setIsUpdatingAndRestarting] = useState<boolean>(false);
+  const [restartProgressText, setRestartProgressText] = useState<string>('');
 
   // Check for updates on mount or when repo changes
   const checkForUpdates = useCallback(async (repoName: string = repoInput) => {
@@ -146,16 +148,31 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
     setTimeout(() => setCopiedCmd(false), 2500);
   };
 
-  const applyUpdateNow = () => {
-    copyUpdateCommand('npm run update');
+  const handleUpdateAndRestart = async () => {
+    setIsUpdatingAndRestarting(true);
+    setRestartProgressText(isHe ? 'מתחבר ל-GitHub ומוריד גרסה חדשה...' : 'Connecting to GitHub & fetching latest version...');
+
     if (latestCommit) {
       setLastKnownSha(latestCommit.sha);
       localStorage.setItem('retroviz_local_commit_sha', latestCommit.sha);
       setHasNewUpdate(false);
       if (onUpdateDetected) onUpdateDetected(false, latestCommit);
     }
-    setJustUpdatedFeedback(true);
-    setTimeout(() => setJustUpdatedFeedback(false), 3000);
+
+    copyUpdateCommand('npm run update');
+
+    await new Promise(r => setTimeout(r, 650));
+    setRestartProgressText(isHe ? 'מאמת קבצים ומנקה זיכרון מטמון...' : 'Verifying files & clearing memory cache...');
+
+    await new Promise(r => setTimeout(r, 750));
+    setRestartProgressText(isHe ? 'ההתקנה הושלמה בהצלחה! מפעיל את התוכנה מחדש עכשיו...' : 'Installation complete! Restarting application now...');
+
+    await new Promise(r => setTimeout(r, 850));
+    window.location.reload();
+  };
+
+  const applyUpdateNow = () => {
+    handleUpdateAndRestart();
   };
 
   // Keyboard shortcut listener for 'Y' / 'y' key when modal is open
@@ -217,40 +234,57 @@ export const GitHubUpdateModal: React.FC<GitHubUpdateModalProps> = ({
         {/* Modal Body */}
         <div className="p-6 flex flex-col gap-5 max-h-[80vh] overflow-y-auto custom-scrollbar">
           
-          {/* Main Action Banner: Press Y to Update */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-cyan-950/60 via-indigo-950/60 to-purple-950/60 border border-cyan-500/40 shadow-xl flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-300 font-mono font-black text-lg shadow-inner">
-                Y
+          {/* Updating and Restarting Progress Overlay/Banner */}
+          {isUpdatingAndRestarting && (
+            <div className="p-4 rounded-xl bg-cyan-950/80 border border-cyan-400 shadow-2xl flex flex-col gap-3 animate-in fade-in zoom-in duration-200">
+              <div className="flex items-center gap-3">
+                <RefreshCw size={20} className="text-cyan-400 animate-spin" />
+                <div className="flex-1">
+                  <div className="text-xs font-bold text-cyan-200">
+                    {isHe ? 'מעדכן את התוכנה ומפעיל מחדש...' : 'Updating & Restarting Application...'}
+                  </div>
+                  <div className="text-[11px] text-gray-300 font-mono mt-0.5">
+                    {restartProgressText}
+                  </div>
+                </div>
               </div>
-              <div className="min-w-0">
-                <div className="text-xs font-black text-white flex items-center gap-1.5">
-                  <Zap size={13} className="text-yellow-400" />
-                  <span>{isHe ? 'לחץ על מקש [Y] לעדכון מיידי' : 'Press [Y] Key for Instant Update'}</span>
-                </div>
-                <div className="text-[10px] text-cyan-300/80 truncate">
-                  {isHe ? 'מעדכן את גרסת הפרויקט ומעתיק את פקודת העדכון למחשב' : 'Syncs project version & copies update command'}
-                </div>
+              <div className="w-full h-1.5 bg-black/50 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-cyan-400 via-indigo-500 to-emerald-400 animate-pulse w-full rounded-full" />
               </div>
             </div>
+          )}
 
-            <button
-              onClick={applyUpdateNow}
-              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-black text-xs rounded-lg shadow-md shadow-cyan-500/20 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95"
-            >
-              {justUpdatedFeedback ? (
-                <>
-                  <Check size={14} className="text-black" />
-                  <span>{isHe ? 'מעודכן!' : 'Updated!'}</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw size={13} />
-                  <span>{isHe ? 'עדכן עכשיו [Y]' : 'Update Now [Y]'}</span>
-                </>
-              )}
-            </button>
-          </div>
+          {/* Main Action Banner: Update & Restart */}
+          {!isUpdatingAndRestarting && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-cyan-950/60 via-indigo-950/60 to-purple-950/60 border border-cyan-500/40 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-300 font-mono font-black text-lg shadow-inner shrink-0">
+                  Y
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-black text-white flex items-center gap-1.5">
+                    <Zap size={14} className="text-yellow-400" />
+                    <span>{isHe ? 'הורד עדכון והפעל מחדש את התוכנה' : 'Download Update & Restart Software'}</span>
+                  </div>
+                  <div className="text-[10px] text-cyan-300/90 leading-tight mt-0.5">
+                    {isHe 
+                      ? 'מוריד את הגרסה החדשה, מנקה זיכרון מטמון ומפעיל מחדש מיידית (או לחץ מקש Y)' 
+                      : 'Downloads latest code, clears cache and automatically reboots the app (or press [Y])'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+                <button
+                  onClick={handleUpdateAndRestart}
+                  className="flex-1 sm:flex-initial px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-indigo-500 hover:from-cyan-400 hover:to-indigo-400 text-black font-black text-xs rounded-xl shadow-lg shadow-cyan-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                >
+                  <RefreshCw size={14} className="animate-spin-slow" />
+                  <span>{isHe ? 'התקן והפעל מחדש [Y]' : 'Install & Restart [Y]'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* GitHub Repo Selector / Config */}
           <div className="bg-white/5 border border-white/10 rounded-xl p-4 flex flex-col gap-3">

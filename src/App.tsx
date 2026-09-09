@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Play, Pause, Upload, Settings, Monitor, Film, Download, FileAudio, 
-  Sparkles, Compass, RotateCcw, Shuffle, ChevronRight, ChevronLeft, Box,
+  Sparkles, Compass, RotateCcw, RotateCw, Shuffle, ChevronRight, ChevronLeft, Box,
   Layers, Volume2, Maximize2, Repeat, Sliders, Palette, Zap, Radio,
   Activity, HelpCircle, X, Contrast, GitBranch, FolderArchive, Image as ImageIcon, FileArchive,
-  Video as VideoIcon
+  Video as VideoIcon, Rewind, FastForward, SkipBack, SkipForward, SlidersHorizontal, CheckCircle2, Cpu,
+  RefreshCw
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { i18n, Language } from './i18n';
@@ -136,13 +137,14 @@ export default function App() {
   const [latestCommitInfo, setLatestCommitInfo] = useState<any>(null);
   const [showUpdateToast, setShowUpdateToast] = useState<boolean>(false);
 
-  // Export Settings
+  // Export Settings (Standard Video Save vs. Advanced Formats)
+  const [exportTab, setExportTab] = useState<'standard' | 'advanced'>('standard');
   const [exportRes, setExportRes] = useState<'720p' | '1080p' | '4k'>('1080p');
   const [exportAr, setExportAr] = useState<'16:9' | '9:16' | '1:1'>('16:9');
   const [exportFps, setExportFps] = useState<number>(30);
   const [exportFormat, setExportFormat] = useState<'webm' | 'mp4'>('webm');
   const [exportPassMode, setExportPassMode] = useState<'color' | 'bw_matte' | 'both'>('color');
-  const [exportTarget, setExportTarget] = useState<'video' | 'frames' | 'both'>('both');
+  const [exportTarget, setExportTarget] = useState<'video' | 'frames' | 'both'>('video');
   const [framesFormat, setFramesFormat] = useState<'png' | 'jpeg'>('png');
   const [capturedFramesCount, setCapturedFramesCount] = useState<number>(0);
   const [isCompressingZip, setIsCompressingZip] = useState<boolean>(false);
@@ -152,6 +154,16 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [isLooping, setIsLooping] = useState(true);
+
+  // Performance Engine & Workstation Telemetry Profile
+  const [performanceProfile, setPerformanceProfile] = useState<'workstation' | 'balanced' | 'eco'>('balanced');
+  const [showPerfMenu, setShowPerfMenu] = useState<boolean>(false);
+  const [liveFps, setLiveFps] = useState<number>(60);
+  const [renderTimeMs, setRenderTimeMs] = useState<number>(1.2);
+  const performanceProfileRef = useRef(performanceProfile);
+  const lastFpsTimestampRef = useRef<number>(performance.now());
+  const frameCountRef = useRef<number>(0);
+  useEffect(() => { performanceProfileRef.current = performanceProfile; }, [performanceProfile]);
 
   // Live DSP Beat & Band State for UI
   const [beatState, setBeatState] = useState<BeatState>({
@@ -217,6 +229,13 @@ export default function App() {
   const smoothedVideoSpeedRef = useRef<number>(1.0);
   const lastSpeedUpdateUIRef = useRef<number>(0);
 
+  // Performance & Zero-Garbage Memory Optimization Buffers (Prevents GC pauses & UI stutter)
+  const scaledFreq1Ref = useRef<Uint8Array | null>(null);
+  const scaledTime1Ref = useRef<Uint8Array | null>(null);
+  const scaledFreq2Ref = useRef<Uint8Array | null>(null);
+  const scaledTime2Ref = useRef<Uint8Array | null>(null);
+  const lastUiUpdateRef = useRef<number>(0);
+
   useEffect(() => { activeStyleIdRef.current = activeStyleId; }, [activeStyleId]);
   useEffect(() => { isDualLayerEnabledRef.current = isDualLayerEnabled; }, [isDualLayerEnabled]);
   useEffect(() => { layer1IdRef.current = layer1Id; }, [layer1Id]);
@@ -248,15 +267,22 @@ export default function App() {
   // Helper to resize all canvases
   const updateCanvasSizes = useCallback(() => {
     let baseH = 720;
-    if (exportRes === '1080p') baseH = 1080;
-    if (exportRes === '4k') baseH = 2160;
+    if (isExportingRef.current) {
+      if (exportResRef.current === '1080p') baseH = 1080;
+      if (exportResRef.current === '4k') baseH = 2160;
+    } else {
+      if (performanceProfileRef.current === 'workstation') baseH = 1080;
+      else if (performanceProfileRef.current === 'balanced') baseH = 720;
+      else if (performanceProfileRef.current === 'eco') baseH = 540;
+    }
     
     let w = 1280;
-    let h = 720;
+    let h = baseH;
+    const ar = exportArRef.current;
     
-    if (exportAr === '16:9') { w = Math.round(baseH * 16/9); h = baseH; }
-    else if (exportAr === '9:16') { w = Math.round(baseH * 9/16); h = baseH; }
-    else if (exportAr === '1:1') { w = baseH; h = baseH; }
+    if (ar === '16:9') { w = Math.round(baseH * 16/9); h = baseH; }
+    else if (ar === '9:16') { w = Math.round(baseH * 9/16); h = baseH; }
+    else if (ar === '1:1') { w = baseH; h = baseH; }
     
     [
       canvas2DRef.current, 
@@ -266,7 +292,7 @@ export default function App() {
       canvasExportCompositeRef.current,
       canvasExportBWRef.current
     ].forEach(c => {
-      if (c) {
+      if (c && (c.width !== w || c.height !== h)) {
         c.width = w;
         c.height = h;
       }
@@ -278,13 +304,47 @@ export default function App() {
     if (butterchurnInstanceRef.current) {
       butterchurnInstanceRef.current.setRendererSize(w, h);
     }
-  }, [exportRes, exportAr]);
+  }, [performanceProfile, exportRes, exportAr]);
 
   useEffect(() => {
     if (!isExporting) {
       updateCanvasSizes();
     }
   }, [updateCanvasSizes, isExporting]);
+
+  // WebGL Context Loss Resilience & Auto-Recovery
+  useEffect(() => {
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
+      console.warn('WebGL context temporarily suspended or lost.');
+    };
+    const handleContextRestored = () => {
+      console.log('WebGL context successfully restored.');
+      updateCanvasSizes();
+    };
+
+    const c3 = canvasThreeRef.current;
+    const cb = canvasButterchurnRef.current;
+    if (c3) {
+      c3.addEventListener('webglcontextlost', handleContextLost, false);
+      c3.addEventListener('webglcontextrestored', handleContextRestored, false);
+    }
+    if (cb) {
+      cb.addEventListener('webglcontextlost', handleContextLost, false);
+      cb.addEventListener('webglcontextrestored', handleContextRestored, false);
+    }
+
+    return () => {
+      if (c3) {
+        c3.removeEventListener('webglcontextlost', handleContextLost);
+        c3.removeEventListener('webglcontextrestored', handleContextRestored);
+      }
+      if (cb) {
+        cb.removeEventListener('webglcontextlost', handleContextLost);
+        cb.removeEventListener('webglcontextrestored', handleContextRestored);
+      }
+    };
+  }, [updateCanvasSizes]);
 
   // Audio FX adjustments
   useEffect(() => {
@@ -357,12 +417,35 @@ export default function App() {
 
   // Animation render loop
   const loop = useCallback((time: number) => {
+    const frameStartTime = performance.now();
     const isLive = isExportingRef.current || isPlayingRef.current || isMicActive;
+    
+    // Telemetry: measure live FPS and GPU frame time
+    frameCountRef.current++;
+    const nowMs = performance.now();
+    const elapsedFps = nowMs - lastFpsTimestampRef.current;
+    if (elapsedFps >= 500) {
+      const fps = Math.round((frameCountRef.current * 1000) / elapsedFps);
+      setLiveFps(fps);
+      setRenderTimeMs(parseFloat((nowMs - frameStartTime).toFixed(1)));
+      frameCountRef.current = 0;
+      lastFpsTimestampRef.current = nowMs;
+    }
     
     if (isLive) {
       const dsp = audioEngineRef.current.analyze();
-      setBeatState(dsp.beat);
-      setBands(dsp.bands);
+
+      // Desktop Engine Optimization: Throttle React UI State updates to ~20 FPS (every 50ms)
+      // This prevents React from thrashing the DOM 60-120 times/sec and completely eliminates browser lag/flicker.
+      const nowMs = performance.now();
+      if (nowMs - lastUiUpdateRef.current > 50) {
+        lastUiUpdateRef.current = nowMs;
+        setBeatState(dsp.beat);
+        setBands(dsp.bands);
+        if (audioRef.current && !isExportingRef.current) {
+          setCurrentTime(audioRef.current.currentTime);
+        }
+      }
 
       const masterInt = intensityRef.current;
       const rawFreq = audioEngineRef.current.freqData;
@@ -375,18 +458,24 @@ export default function App() {
       const int1 = masterInt * l1Sensitivity;
       const int2 = masterInt * l2Sensitivity;
 
-      // Scaled audio data for Layer 1
-      const scaledFreq1 = new Uint8Array(rawFreq.length);
-      const scaledTime1 = new Uint8Array(rawTime.length);
+      // Reusable zero-allocation typed buffers for Layer 1 & 2
+      if (!scaledFreq1Ref.current || scaledFreq1Ref.current.length !== rawFreq.length) {
+        scaledFreq1Ref.current = new Uint8Array(rawFreq.length);
+        scaledTime1Ref.current = new Uint8Array(rawTime.length);
+        scaledFreq2Ref.current = new Uint8Array(rawFreq.length);
+        scaledTime2Ref.current = new Uint8Array(rawTime.length);
+      }
+      const scaledFreq1 = scaledFreq1Ref.current;
+      const scaledTime1 = scaledTime1Ref.current;
+      const scaledFreq2 = scaledFreq2Ref.current;
+      const scaledTime2 = scaledTime2Ref.current;
+
       for (let i = 0; i < rawFreq.length; i++) {
         scaledFreq1[i] = Math.min(255, rawFreq[i] * int1);
         const tDiff = rawTime[i] - 128;
         scaledTime1[i] = Math.max(0, Math.min(255, 128 + tDiff * int1));
       }
 
-      // Scaled audio data for Layer 2 (when Dual Layer is enabled)
-      const scaledFreq2 = new Uint8Array(rawFreq.length);
-      const scaledTime2 = new Uint8Array(rawTime.length);
       if (isDual) {
         for (let i = 0; i < rawFreq.length; i++) {
           scaledFreq2[i] = Math.min(255, rawFreq[i] * int2);
@@ -785,6 +874,73 @@ export default function App() {
     }
   };
 
+  // Immediate single-frame render for scrub/seek preview when paused
+  const renderSingleFrame = useCallback(() => {
+    const vEl = videoRef.current;
+    if (canvas2DRef.current && vEl && vEl.readyState >= 2 && videoUrlRef.current) {
+      const ctx = canvas2DRef.current.getContext('2d');
+      const w = canvas2DRef.current.width;
+      const h = canvas2DRef.current.height;
+      if (ctx) {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, w, h);
+        const vw = vEl.videoWidth || w;
+        const vh = vEl.videoHeight || h;
+        const set = videoRemixSettingsRef.current;
+        const scale = set.videoFit === 'cover' ? Math.max(w / vw, h / vh) : Math.min(w / vw, h / vh);
+        const dw = vw * scale;
+        const dh = vh * scale;
+        const dx = (w - dw) / 2;
+        const dy = (h - dh) / 2;
+        ctx.drawImage(vEl, dx, dy, dw, dh);
+      }
+    }
+  }, []);
+
+  // Listen to video element seeked events so paused frame updates immediately
+  useEffect(() => {
+    const vEl = videoRef.current;
+    if (!vEl) return;
+    const onSeeked = () => {
+      renderSingleFrame();
+    };
+    vEl.addEventListener('seeked', onSeeked);
+    return () => vEl.removeEventListener('seeked', onSeeked);
+  }, [renderSingleFrame, videoUrl]);
+
+  // Synchronized Master Seek: controls Audio and Video simultaneously to exact point X
+  const seekTo = useCallback((targetSec: number) => {
+    const maxDur = duration || (audioRef.current?.duration) || 10000;
+    const clamped = Math.max(0, Math.min(maxDur, targetSec));
+    setCurrentTime(clamped);
+
+    if (audioRef.current) {
+      audioRef.current.currentTime = clamped;
+    }
+
+    if (videoRef.current && videoUrlRef.current && videoRef.current.duration > 0) {
+      const vDur = videoRef.current.duration;
+      let vTarget = clamped;
+      if (vTarget >= vDur) {
+        if (videoRemixSettingsRef.current.endBehavior === 'loop_video' || isLoopingRef.current) {
+          vTarget = clamped % vDur;
+        } else {
+          vTarget = Math.min(clamped, vDur);
+        }
+      }
+      videoRef.current.currentTime = vTarget;
+    }
+
+    // Force frame update so user sees frame at point X without needing to press play
+    renderSingleFrame();
+  }, [duration, renderSingleFrame]);
+
+  // Skip relative seconds (e.g. -5s, +5s, -1s, +1s)
+  const skipTime = useCallback((deltaSec: number) => {
+    const baseTime = audioRef.current?.currentTime ?? currentTime;
+    seekTo(baseTime + deltaSec);
+  }, [currentTime, seekTo]);
+
   const togglePlay = () => {
     if (!audioRef.current || !audioUrl) return;
     const ctx = audioEngineRef.current.getContext();
@@ -854,6 +1010,19 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault();
         togglePlay();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        skipTime(e.shiftKey ? -1 : -5);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        skipTime(e.shiftKey ? 1 : 5);
+      } else if (e.code === 'Home') {
+        e.preventDefault();
+        seekTo(0);
+      } else if (e.key === 'j' || e.key === 'J') {
+        skipTime(-5);
+      } else if (e.key === 'k' || e.key === 'K') {
+        togglePlay();
       } else if (e.key === 'l' || e.key === 'L') {
         setIsLooping(prev => !prev);
       } else if (e.key === 'f' || e.key === 'F') {
@@ -880,7 +1049,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [togglePlay, activeItem.engine]);
+  }, [togglePlay, skipTime, seekTo, activeItem.engine]);
 
   // Finalize export (Video and/or Frames ZIP)
   const finalizeExport = async (timestamp: number) => {
@@ -1142,30 +1311,114 @@ ${exportPassModeRef.current === 'both'
   return (
     <div dir={dir} className={`h-screen bg-[#0A0A0B] text-[#E0E0E0] font-sans selection:bg-cyan-500 selection:text-white flex flex-col overflow-hidden ${lang === 'he' ? 'text-right' : 'text-left'}`}>
       
-      {/* Header */}
-      <header className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#121214] shrink-0 z-20">
+      {/* Desktop Workstation Header */}
+      <header className="h-14 border-b border-white/10 flex items-center justify-between px-6 bg-[#121214] shrink-0 z-20 select-none">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 via-indigo-600 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
             <Monitor size={18} className="text-white" />
           </div>
-          <div className="flex items-baseline gap-2">
-            <h1 className="text-lg font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-200 to-indigo-300">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-base sm:text-lg font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-200 to-indigo-300">
               {t.title}
             </h1>
-            <span className="text-xs opacity-50 font-normal hidden sm:inline">{t.subtitle}</span>
+            
+            {/* Workstation Live Telemetry & Dynamic Resolution Mode */}
+            <div className="relative hidden md:block">
+              <button
+                onClick={() => setShowPerfMenu(prev => !prev)}
+                title={lang === 'he' ? 'פרופיל ביצועים ודיאגנוסטיקה (לחץ לשינוי)' : 'Performance Profile & Diagnostics (Click to switch)'}
+                className="px-2.5 py-1 rounded-full bg-black/60 border border-white/10 hover:border-cyan-500/40 text-[10px] font-mono text-gray-300 flex items-center gap-2 transition-all shadow-inner cursor-pointer"
+              >
+                <div className={`w-1.5 h-1.5 rounded-full ${liveFps >= 50 ? 'bg-emerald-400 animate-pulse' : liveFps >= 30 ? 'bg-yellow-400' : 'bg-red-400'}`} />
+                <span className={`font-bold ${liveFps >= 50 ? 'text-emerald-300' : liveFps >= 30 ? 'text-yellow-300' : 'text-red-300'}`}>
+                  {liveFps} FPS
+                </span>
+                <span className="text-gray-500">•</span>
+                <span className="text-gray-400">{renderTimeMs}ms</span>
+                <span className="text-gray-500">•</span>
+                <span className="text-cyan-400 uppercase font-bold text-[9px]">{performanceProfile}</span>
+              </button>
+
+              {/* Performance Profile Dropdown */}
+              {showPerfMenu && (
+                <div 
+                  className={`absolute top-full mt-2 ${lang === 'he' ? 'right-0' : 'left-0'} w-64 p-2 bg-[#18181b] border border-white/15 rounded-xl shadow-2xl z-50 text-xs space-y-1`}
+                  onMouseLeave={() => setShowPerfMenu(false)}
+                >
+                  <div className="text-[10px] text-gray-400 font-mono font-bold uppercase tracking-wider px-2 py-1 flex items-center justify-between border-b border-white/10">
+                    <span>{lang === 'he' ? 'פרופיל ביצועים לתצוגה' : 'Viewport Engine Profile'}</span>
+                    <Cpu size={11} className="text-cyan-400" />
+                  </div>
+
+                  <button
+                    onClick={() => { setPerformanceProfile('balanced'); setShowPerfMenu(false); }}
+                    className={`w-full text-start p-2 rounded-lg flex items-center justify-between transition-colors ${
+                      performanceProfile === 'balanced' ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40' : 'text-gray-300 hover:bg-white/5'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs">{lang === 'he' ? 'מאוזן (720p 60FPS) - מומלץ' : 'Balanced (720p 60FPS) - Default'}</div>
+                      <div className="text-[9px] text-gray-400 font-normal">{lang === 'he' ? 'חלק ללא תקיעות, ניצול זיכרון מינימלי' : 'Silky smooth, low GPU heat & memory'}</div>
+                    </div>
+                    {performanceProfile === 'balanced' && <CheckCircle2 size={13} className="text-cyan-400 shrink-0" />}
+                  </button>
+
+                  <button
+                    onClick={() => { setPerformanceProfile('workstation'); setShowPerfMenu(false); }}
+                    className={`w-full text-start p-2 rounded-lg flex items-center justify-between transition-colors ${
+                      performanceProfile === 'workstation' ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40' : 'text-gray-300 hover:bg-white/5'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs">{lang === 'he' ? 'תחנת עבודה (1080p HD)' : 'Workstation (1080p HD)'}</div>
+                      <div className="text-[9px] text-gray-400 font-normal">{lang === 'he' ? 'חדות מרבית למסכי 4K / מחשבי עריכה' : 'Maximum sharpness for studio monitors'}</div>
+                    </div>
+                    {performanceProfile === 'workstation' && <CheckCircle2 size={13} className="text-cyan-400 shrink-0" />}
+                  </button>
+
+                  <button
+                    onClick={() => { setPerformanceProfile('eco'); setShowPerfMenu(false); }}
+                    className={`w-full text-start p-2 rounded-lg flex items-center justify-between transition-colors ${
+                      performanceProfile === 'eco' ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/40' : 'text-gray-300 hover:bg-white/5'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs">{lang === 'he' ? 'חסכון במשאבים (540p Eco)' : 'Eco Saver (540p)'}</div>
+                      <div className="text-[9px] text-gray-400 font-normal">{lang === 'he' ? 'למחשבים ניידים ומערכות חלשות' : 'Minimal RAM & battery consumption'}</div>
+                    </div>
+                    {performanceProfile === 'eco' && <CheckCircle2 size={13} className="text-cyan-400 shrink-0" />}
+                  </button>
+
+                  <div className="px-2 pt-1 border-t border-white/5 text-[9px] text-gray-400 font-mono">
+                    {lang === 'he' ? '💡 ייצוא וידאו תמיד מרונדר באיכות מלאה לפי הגדרות השמירה' : '💡 Final video export always renders in 100% full export resolution'}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* VJ Real-time HUD, GitHub Sync & Language */}
+        {/* Workstation Controls: Update Button, VJ HUD & Language */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* Prominent Desktop Software Updater Button */}
           <button
             onClick={() => setShowGitHubModal(true)}
-            className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-cyan-500/40 text-xs font-bold text-gray-300 hover:text-white flex items-center gap-1.5 transition-all shadow-sm group"
-            title={t.githubSyncTooltip}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition-all shadow-sm cursor-pointer ${
+              hasNewGitHubUpdate 
+                ? 'bg-gradient-to-r from-cyan-500 to-indigo-600 text-black font-black border-cyan-400 shadow-lg shadow-cyan-500/25 animate-pulse' 
+                : 'bg-white/5 hover:bg-white/10 border-white/10 text-gray-200 hover:text-white'
+            }`}
+            title={lang === 'he' ? 'בדוק והתקן עדכון מ-GitHub (מקש Y)' : 'Check & Install Update from GitHub (Key Y)'}
           >
-            <GitBranch size={13} className="text-cyan-400 group-hover:rotate-12 transition-transform" />
-            <span className="hidden md:inline">{t.githubSyncBtn}</span>
-            <span className="md:hidden">GitHub</span>
+            <RefreshCw size={13} className={hasNewGitHubUpdate ? 'animate-spin-slow' : 'text-cyan-400'} />
+            <span className="font-mono">
+              {hasNewGitHubUpdate 
+                ? (lang === 'he' ? 'קיים עדכון! [Y]' : 'Update Available! [Y]') 
+                : (lang === 'he' ? 'עדכון תוכנה [Y]' : 'Check Updates [Y]')}
+            </span>
+            {hasNewGitHubUpdate && (
+              <span className="w-2 h-2 rounded-full bg-yellow-400 shrink-0" />
+            )}
           </button>
 
           <VJModeHUD 
@@ -1762,26 +2015,59 @@ ${exportPassModeRef.current === 'both'
             )}
           </div>
 
-          {/* Bottom Player Area with WaveSurfer */}
-          <div className="h-24 border-t border-white/5 bg-[#121214] flex items-center px-6 gap-6 shrink-0 z-10">
+          {/* Bottom Player Area with Synchronized Seeking & Transport */}
+          <div className="h-24 border-t border-white/10 bg-[#121214] flex items-center px-4 sm:px-6 gap-3 sm:gap-5 shrink-0 z-10 select-none">
             
-            {/* Play, Repeat & Upload Controls */}
-            <div className="flex items-center gap-3 shrink-0">
+            {/* Play, Transport Seeking & Repeat Controls */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <label 
                 title={t.uploadTrack}
-                className={`cursor-pointer p-2.5 rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-white/5 ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
+                className={`cursor-pointer p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-white/5 ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
               >
-                <Upload size={18} />
+                <Upload size={16} />
                 <input type="file" accept="audio/*" onChange={handleFileUpload} className="hidden" disabled={isExporting} />
               </label>
 
+              {/* Jump to Beginning (0:00) */}
+              <button
+                onClick={() => seekTo(0)}
+                disabled={!audioUrl || isExporting}
+                title={lang === 'he' ? 'חזור להתחלה (Home)' : 'Restart to Beginning (Home)'}
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-white/5 disabled:opacity-30"
+              >
+                <SkipBack size={15} />
+              </button>
+
+              {/* Seek Backwards 5 seconds */}
+              <button
+                onClick={() => skipTime(-5)}
+                disabled={!audioUrl || isExporting}
+                title={lang === 'he' ? 'הזז 5 שניות אחורה (חץ שמאלה)' : 'Seek 5s Back (Left Arrow)'}
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors border border-white/5 flex items-center gap-0.5 disabled:opacity-30 text-[10px] font-mono font-bold"
+              >
+                <Rewind size={15} />
+                <span className="hidden xl:inline">-5s</span>
+              </button>
+
+              {/* Main Play / Pause Button */}
               <button 
                 onClick={togglePlay} 
                 disabled={!audioUrl || isExporting}
-                className="w-12 h-12 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-500 text-black flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-cyan-500/25 disabled:opacity-50 disabled:hover:scale-100"
-                title={isPlaying ? "Pause" : "Play"}
+                className="w-11 h-11 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-500 text-black flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-cyan-500/25 disabled:opacity-50 disabled:hover:scale-100 shrink-0"
+                title={isPlaying ? "Pause (Space)" : "Play (Space)"}
               >
-                {isPlaying ? <Pause size={22} className="fill-current text-white" /> : <Play size={22} className="fill-current text-white ml-0.5" />}
+                {isPlaying ? <Pause size={20} className="fill-current text-white" /> : <Play size={20} className="fill-current text-white ml-0.5" />}
+              </button>
+
+              {/* Seek Forward 5 seconds */}
+              <button
+                onClick={() => skipTime(5)}
+                disabled={!audioUrl || isExporting}
+                title={lang === 'he' ? 'הזז 5 שניות קדימה (חץ ימינה)' : 'Seek 5s Forward (Right Arrow)'}
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors border border-white/5 flex items-center gap-0.5 disabled:opacity-30 text-[10px] font-mono font-bold"
+              >
+                <FastForward size={15} />
+                <span className="hidden xl:inline">+5s</span>
               </button>
 
               {/* Repeat / Loop Button */}
@@ -1789,283 +2075,508 @@ ${exportPassModeRef.current === 'both'
                 onClick={() => setIsLooping(!isLooping)}
                 disabled={isExporting}
                 title={isLooping ? t.repeatOn : t.repeatOff}
-                className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all ${
+                className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-xl border transition-all ${
                   isLooping 
                     ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300 shadow-sm shadow-cyan-500/20' 
                     : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-300 hover:bg-white/10'
                 }`}
               >
-                <Repeat size={16} className={isLooping ? 'animate-pulse' : ''} />
-                <span className="text-[9px] font-bold mt-0.5 tracking-tight">
-                  {isLooping ? (lang === 'he' ? 'ריפיט פעיל' : 'LOOP ON') : (lang === 'he' ? 'ריפיט כבוי' : 'LOOP OFF')}
+                <Repeat size={14} className={isLooping ? 'animate-pulse' : ''} />
+                <span className="text-[8px] sm:text-[9px] font-bold mt-0.5 tracking-tight">
+                  {isLooping ? (lang === 'he' ? 'לופ פעיל' : 'LOOP') : (lang === 'he' ? 'לופ כבוי' : 'OFF')}
                 </span>
               </button>
             </div>
 
-            {/* Interactive WaveSurfer Drop & Waveform Player */}
-            <WaveformPlayer 
-              audioUrl={audioUrl}
-              audioRef={audioRef}
-              currentTime={currentTime}
-              duration={duration}
-              isExporting={isExporting}
-              lang={lang}
-            />
+            {/* Interactive WaveSurfer Drop & Synchronized Waveform Player */}
+            <div className="flex-1 flex flex-col justify-center min-w-0">
+              <WaveformPlayer 
+                audioUrl={audioUrl}
+                audioRef={audioRef}
+                currentTime={currentTime}
+                duration={duration}
+                isExporting={isExporting}
+                lang={lang}
+                onSeek={seekTo}
+              />
+              
+              {/* Synchronized Precision Scrubber Slider */}
+              {audioUrl && (
+                <div className="flex items-center gap-2 mt-1">
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration || 100}
+                    step={0.1}
+                    value={currentTime}
+                    onChange={(e) => seekTo(parseFloat(e.target.value))}
+                    disabled={isExporting}
+                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 hover:bg-white/20 transition-all"
+                    title={lang === 'he' ? 'גרור להזזת וידיאו ואודיו מסונכרנים' : 'Scrub synchronized video & audio'}
+                  />
+                  <div className="text-[10px] font-mono text-cyan-300 shrink-0 select-none">
+                    {formatTime(currentTime)} / {formatTime(duration)}
+                  </div>
+                </div>
+              )}
+            </div>
 
-            {/* Audio File Name */}
+            {/* Audio & Video Status Badge */}
             <div className="flex items-center gap-2 max-w-[140px] truncate shrink-0 hidden lg:flex">
-              <FileAudio size={16} className="text-gray-500 shrink-0" />
-              <span className="text-[10px] text-gray-400 font-mono truncate" title={audioFile?.name}>
-                {audioFile ? audioFile.name : (isMicActive ? 'MIC INPUT' : t.nowPlaying)}
-              </span>
+              <FileAudio size={16} className="text-cyan-400 shrink-0" />
+              <div className="flex flex-col min-w-0">
+                <span className="text-[10px] text-gray-300 font-mono truncate" title={audioFile?.name}>
+                  {audioFile ? audioFile.name : (isMicActive ? 'MIC INPUT' : t.nowPlaying)}
+                </span>
+                {videoUrl && (
+                  <span className="text-[8px] text-indigo-400 font-mono flex items-center gap-1">
+                    <VideoIcon size={9} />
+                    <span>{lang === 'he' ? 'וידאו מסונכרן' : 'Video Synced'}</span>
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </section>
 
         {/* Right Sidebar: Export Settings */}
         <aside className="w-72 lg:w-80 border-s border-white/5 flex flex-col bg-[#121214] shrink-0">
-          <div className="p-6 flex flex-col gap-6 h-full overflow-y-auto custom-scrollbar">
+          <div className="p-5 flex flex-col gap-5 h-full overflow-y-auto custom-scrollbar">
             
-            {/* Export Target (Video / Frames / Both) */}
+            {/* Export Mode Tabs: Standard vs. Advanced */}
             <div>
-              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block flex items-center gap-1.5">
-                <FolderArchive size={13} className="text-cyan-400" />
-                <span>{t.exportTarget}</span>
-              </label>
-              
-              <div className="flex flex-col gap-1.5">
+              <div className="flex p-1 bg-white/5 border border-white/10 rounded-xl gap-1">
                 <button
-                  onClick={() => setExportTarget('both')}
+                  onClick={() => {
+                    setExportTab('standard');
+                    setExportTarget('video');
+                    setExportPassMode('color');
+                  }}
                   disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportTarget === 'both' 
-                      ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border-cyan-500/50 text-cyan-200' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                  className={`flex-1 py-2 px-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    exportTab === 'standard'
+                      ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-black shadow-md shadow-cyan-500/25 font-black'
+                      : 'text-gray-400 hover:text-white hover:bg-white/5'
                   }`}
                 >
-                  <div>
-                    <div className="text-xs font-bold flex items-center gap-1.5">
-                      <Film size={13} />
-                      <span>+</span>
-                      <FolderArchive size={13} />
-                      <span>{t.targetBoth}</span>
-                    </div>
-                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'מייצא קובץ וידיאו וגם תיקיית ZIP מלאה בכל הפרמים' : 'Exports video file AND a ZIP folder with every frame'}</div>
-                  </div>
-                  {exportTarget === 'both' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                  <Film size={14} />
+                  <span>{lang === 'he' ? 'שמירת וידאו' : 'Standard Video'}</span>
                 </button>
 
                 <button
-                  onClick={() => setExportTarget('video')}
+                  onClick={() => setExportTab('advanced')}
                   disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportTarget === 'video' 
-                      ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                  className={`flex-1 py-2 px-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    exportTab === 'advanced'
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25 font-black'
+                      : 'text-gray-400 hover:text-white hover:bg-white/5'
                   }`}
                 >
-                  <div>
-                    <div className="text-xs font-bold flex items-center gap-1.5">
-                      <Film size={13} />
-                      <span>{t.targetVideoOnly}</span>
-                    </div>
-                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'קובץ וידיאו MP4 / WebM' : 'Video file only'}</div>
-                  </div>
-                  {exportTarget === 'video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                  <SlidersHorizontal size={14} />
+                  <span>{lang === 'he' ? 'מתקדם' : 'Advanced'}</span>
                 </button>
+              </div>
 
-                <button
-                  onClick={() => setExportTarget('frames')}
-                  disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportTarget === 'frames' 
-                      ? 'bg-indigo-500/25 border-indigo-500/60 text-indigo-200' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <div>
-                    <div className="text-xs font-bold flex items-center gap-1.5">
-                      <FolderArchive size={13} />
-                      <span>{t.targetFramesOnly}</span>
-                    </div>
-                    <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'תיקיית ZIP של כל התמונות בדידים' : 'ZIP archive of standalone image sequence'}</div>
-                  </div>
-                  {exportTarget === 'frames' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
-                </button>
+              <div className="text-[10px] text-gray-400 mt-2 px-1 leading-tight">
+                {exportTab === 'standard' 
+                  ? (lang === 'he' ? 'שמירה פשוטה וישירה של קובץ וידאו רגיל למחשב' : 'Simple, direct standard video export ready for playback')
+                  : (lang === 'he' ? 'הגדרות מקצועיות: חבילות ZIP, רצף פרמים, מסכות שחור-לבן ל-VJ' : 'Professional options: ZIP frame sequences, B&W matte passes')}
               </div>
             </div>
 
-            {/* Frame Image Format (if frames enabled) */}
-            {(exportTarget === 'frames' || exportTarget === 'both') && (
-              <div className="p-3 bg-white/5 border border-cyan-500/20 rounded-xl space-y-2">
-                <div className="text-[10px] uppercase tracking-widest text-cyan-300 font-bold flex items-center gap-1.5">
-                  <ImageIcon size={12} />
-                  <span>{t.framesFormat}</span>
+            {/* TAB 1: STANDARD VIDEO EXPORT (Simple, clean, intuitive) */}
+            {exportTab === 'standard' && (
+              <div className="space-y-4">
+                
+                {/* Resolution */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block flex items-center gap-1.5">
+                    <span>{t.resolution}</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      onClick={() => setExportRes('720p')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportRes === '720p'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>720p</div>
+                      <div className="text-[8px] opacity-70 font-normal">HD</div>
+                    </button>
+                    <button
+                      onClick={() => setExportRes('1080p')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportRes === '1080p'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300 shadow-sm shadow-cyan-500/20'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>1080p</div>
+                      <div className="text-[8px] text-cyan-400 font-normal">{lang === 'he' ? 'מומלץ' : 'Best'}</div>
+                    </button>
+                    <button
+                      onClick={() => setExportRes('4k')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportRes === '4k'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>4K</div>
+                      <div className="text-[8px] opacity-70 font-normal">UHD</div>
+                    </button>
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setFramesFormat('png')}
-                    disabled={isExporting}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
-                      framesFormat === 'png' 
-                        ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20' 
-                        : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
-                    }`}
-                  >
-                    PNG ({lang === 'he' ? 'איכות מקסימלית' : 'Lossless'})
-                  </button>
-                  <button
-                    onClick={() => setFramesFormat('jpeg')}
-                    disabled={isExporting}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
-                      framesFormat === 'jpeg' 
-                        ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20' 
-                        : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
-                    }`}
-                  >
-                    JPEG ({lang === 'he' ? 'דחיסה מהירה' : 'Fast / 95%'})
-                  </button>
+
+                {/* Aspect Ratio */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block">
+                    {t.aspectRatio}
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      onClick={() => setExportAr('16:9')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportAr === '16:9'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>16:9</div>
+                      <div className="text-[8px] opacity-70 font-normal">{lang === 'he' ? 'רחב (YouTube)' : 'Widescreen'}</div>
+                    </button>
+                    <button
+                      onClick={() => setExportAr('9:16')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportAr === '9:16'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>9:16</div>
+                      <div className="text-[8px] opacity-70 font-normal">{lang === 'he' ? 'אנכי (Reels)' : 'Vertical'}</div>
+                    </button>
+                    <button
+                      onClick={() => setExportAr('1:1')}
+                      disabled={isExporting}
+                      className={`py-2 px-1 text-center rounded-lg text-xs font-bold border transition-all ${
+                        exportAr === '1:1'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>1:1</div>
+                      <div className="text-[8px] opacity-70 font-normal">{lang === 'he' ? 'ריבוע' : 'Square'}</div>
+                    </button>
+                  </div>
                 </div>
-                <p className="text-[9px] text-gray-400 leading-tight">
-                  {lang === 'he' 
-                    ? '📁 הפרמים ייארזו לקובץ ZIP הכולל תמונות ממוספרות (frame_00001.png...) לטעינה נוחה בתוכנות עריכה' 
-                    : '📁 Frames are saved into numbered image sequences (frame_00001.png...) ready for Premiere / After Effects / Resolve'}
-                </p>
+
+                {/* Video File Format (MP4 / WebM) */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block">
+                    {t.format}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setExportFormat('mp4')}
+                      disabled={isExporting}
+                      className={`py-2.5 px-2 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportFormat === 'mp4'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300 shadow-sm shadow-cyan-500/20'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold">MP4 Video</div>
+                        <div className="text-[8px] opacity-70">{lang === 'he' ? 'תואם לכל מחשב וטלפון' : 'Universal standard'}</div>
+                      </div>
+                      {exportFormat === 'mp4' && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
+                    <button
+                      onClick={() => setExportFormat('webm')}
+                      disabled={isExporting}
+                      className={`py-2.5 px-2 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportFormat === 'webm'
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-cyan-300'
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold">WebM (VP9)</div>
+                        <div className="text-[8px] opacity-70">{lang === 'he' ? 'דחיסה מהירה' : 'Fast rendering'}</div>
+                      </div>
+                      {exportFormat === 'webm' && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Standard Summary Card */}
+                <div className="p-3 bg-white/5 border border-white/10 rounded-xl space-y-1.5 text-xs">
+                  <div className="text-[10px] text-gray-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <CheckCircle2 size={12} className="text-cyan-400" />
+                    <span>{lang === 'he' ? 'סיכום שמירה' : 'Export Summary'}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-300">
+                    <span className="text-gray-400">{lang === 'he' ? 'סוג תוצר:' : 'Output:'}</span>
+                    <span className="font-bold text-cyan-300">{exportRes} {exportFormat.toUpperCase()} ({exportAr})</span>
+                  </div>
+                  <div className="flex justify-between text-gray-300">
+                    <span className="text-gray-400">{lang === 'he' ? 'משך זמן:' : 'Duration:'}</span>
+                    <span className="font-mono text-cyan-300">{formatTime(duration)}</span>
+                  </div>
+                  <p className="text-[9px] text-gray-400 pt-1 border-t border-white/5 leading-tight">
+                    {lang === 'he' 
+                      ? 'הקובץ יישמר בתיקיית ההורדות במחשב שלך ומוכן ישירות להעלאה ולצפייה.' 
+                      : 'File will be saved to your local downloads folder, ready for playback and uploading.'}
+                  </p>
+                </div>
               </div>
             )}
 
-            {/* Resolution & FPS (Supports 12 FPS Lo-Fi / Stop Motion) */}
-            <div>
-              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.exportSettings}</label>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="p-3 bg-white/5 border border-white/10 rounded-lg">
-                  <div className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2">{t.resolution}</div>
-                  <select value={exportRes} onChange={e => setExportRes(e.target.value as any)} className="w-full bg-transparent text-xs font-bold focus:outline-none" disabled={isExporting}>
-                    <option className="bg-[#1A1A1D]" value="720p">720p</option>
-                    <option className="bg-[#1A1A1D]" value="1080p">1080p (FHD)</option>
-                    <option className="bg-[#1A1A1D]" value="4k">4K (UHD)</option>
-                  </select>
-                </div>
-                <div className="p-3 bg-white/5 border border-white/10 rounded-lg">
-                  <div className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-2">{t.fps}</div>
-                  <select value={exportFps} onChange={e => setExportFps(Number(e.target.value))} className="w-full bg-transparent text-xs font-bold focus:outline-none cursor-pointer" disabled={isExporting}>
-                    <option className="bg-[#1A1A1D]" value={12}>12 FPS ({lang === 'he' ? 'רטרו / סטופ-מושן' : 'Lo-Fi / Retro'})</option>
-                    <option className="bg-[#1A1A1D]" value={24}>24 FPS ({lang === 'he' ? 'קולנועי' : 'Cinema'})</option>
-                    <option className="bg-[#1A1A1D]" value={30}>30 FPS ({lang === 'he' ? 'סטנדרטי' : 'Standard'})</option>
-                    <option className="bg-[#1A1A1D]" value={60}>60 FPS ({lang === 'he' ? 'חלק ומהיר' : 'Smooth'})</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+            {/* TAB 2: ADVANCED EXPORT SETTINGS */}
+            {exportTab === 'advanced' && (
+              <div className="space-y-5">
+                
+                {/* Export Target (Video / Frames / Both) */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block flex items-center gap-1.5">
+                    <FolderArchive size={13} className="text-indigo-400" />
+                    <span>{t.exportTarget}</span>
+                  </label>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      onClick={() => setExportTarget('video')}
+                      disabled={isExporting}
+                      className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportTarget === 'video' 
+                          ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold flex items-center gap-1.5">
+                          <Film size={13} />
+                          <span>{t.targetVideoOnly}</span>
+                        </div>
+                        <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'קובץ וידיאו יחיד (MP4 / WebM)' : 'Video file only'}</div>
+                      </div>
+                      {exportTarget === 'video' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
 
-            {/* Aspect Ratio */}
-            <div>
-              <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.aspectRatio}</label>
-              <div className="flex gap-2">
-                <button onClick={() => setExportAr('16:9')} disabled={isExporting} className={`flex-1 py-2.5 text-[10px] rounded-lg font-bold transition-all ${exportAr === '16:9' ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>16:9</button>
-                <button onClick={() => setExportAr('9:16')} disabled={isExporting} className={`flex-1 py-2.5 text-[10px] rounded-lg font-bold transition-all ${exportAr === '9:16' ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>9:16 (Reels)</button>
-                <button onClick={() => setExportAr('1:1')} disabled={isExporting} className={`flex-1 py-2.5 text-[10px] rounded-lg font-bold transition-all ${exportAr === '1:1' ? 'bg-cyan-500/20 border border-cyan-500/50 text-cyan-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>1:1</button>
-              </div>
-            </div>
+                    <button
+                      onClick={() => setExportTarget('both')}
+                      disabled={isExporting}
+                      className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportTarget === 'both' 
+                          ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border-cyan-500/50 text-cyan-200' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold flex items-center gap-1.5">
+                          <Film size={13} />
+                          <span>+</span>
+                          <FolderArchive size={13} />
+                          <span>{t.targetBoth}</span>
+                        </div>
+                        <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'קובץ וידיאו + חבילת ZIP עם כל הפרמים' : 'Video file AND frame sequence ZIP'}</div>
+                      </div>
+                      {exportTarget === 'both' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
 
-            {/* Color & B&W Matte Pass Mode (Full Color, B&W Matte, or Dual Copy) */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">{t.exportPassMode}</label>
-                <button
-                  onClick={() => setPreviewBW(!previewBW)}
-                  title={t.bwPreviewToggle}
-                  className={`text-[10px] px-2 py-0.5 rounded-md flex items-center gap-1 border transition-all ${
-                    previewBW 
-                      ? 'bg-white text-black border-white font-bold shadow-sm shadow-white/40' 
-                      : 'bg-white/5 text-gray-400 border-white/10 hover:text-white hover:bg-white/10'
-                  }`}
-                >
-                  <Contrast size={12} />
-                  <span>{t.bwPreviewToggle}</span>
-                </button>
-              </div>
-              
-              <div className="flex flex-col gap-1.5">
-                <button
-                  onClick={() => setExportPassMode('color')}
-                  disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportPassMode === 'color' 
-                      ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <div>
-                    <div className="text-xs font-bold">{t.passColorOnly}</div>
-                    <div className="text-[9px] opacity-70">{lang === 'he' ? 'ייצוא רגיל בצבעים חיים' : 'Original vivid colors'}</div>
+                    <button
+                      onClick={() => setExportTarget('frames')}
+                      disabled={isExporting}
+                      className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportTarget === 'frames' 
+                          ? 'bg-indigo-500/25 border-indigo-500/60 text-indigo-200' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold flex items-center gap-1.5">
+                          <FolderArchive size={13} />
+                          <span>{t.targetFramesOnly}</span>
+                        </div>
+                        <div className="text-[9px] opacity-70 mt-0.5">{lang === 'he' ? 'תיקיית ZIP של כל הפרמים כתמונות בדידות' : 'ZIP archive of standalone image sequence'}</div>
+                      </div>
+                      {exportTarget === 'frames' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
+                    </button>
                   </div>
-                  {exportPassMode === 'color' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
-                </button>
+                </div>
 
-                <button
-                  onClick={() => setExportPassMode('bw_matte')}
-                  disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportPassMode === 'bw_matte' 
-                      ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <div>
-                    <div className="text-xs font-bold flex items-center gap-1.5">
-                      <Contrast size={13} className="text-white" />
-                      <span>{t.passBwOnly}</span>
+                {/* Frame Image Format (if frames enabled) */}
+                {(exportTarget === 'frames' || exportTarget === 'both') && (
+                  <div className="p-3 bg-white/5 border border-indigo-500/30 rounded-xl space-y-2">
+                    <div className="text-[10px] uppercase tracking-widest text-indigo-300 font-bold flex items-center gap-1.5">
+                      <ImageIcon size={12} />
+                      <span>{t.framesFormat}</span>
                     </div>
-                    <div className="text-[9px] opacity-70">{lang === 'he' ? 'אלמנטים בלבן טהור, רקע שחור מלא' : 'White elements on #000000 black'}</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setFramesFormat('png')}
+                        disabled={isExporting}
+                        className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
+                          framesFormat === 'png' 
+                            ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20' 
+                            : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
+                        }`}
+                      >
+                        PNG ({lang === 'he' ? 'איכות מקסימלית' : 'Lossless'})
+                      </button>
+                      <button
+                        onClick={() => setFramesFormat('jpeg')}
+                        disabled={isExporting}
+                        className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all ${
+                          framesFormat === 'jpeg' 
+                            ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20' 
+                            : 'bg-white/5 text-gray-400 hover:text-white border border-white/5'
+                        }`}
+                      >
+                        JPEG ({lang === 'he' ? 'דחיסה מהירה' : 'Fast / 95%'})
+                      </button>
+                    </div>
                   </div>
-                  {exportPassMode === 'bw_matte' && <div className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />}
-                </button>
+                )}
 
-                <button
-                  onClick={() => setExportPassMode('both')}
-                  disabled={isExporting}
-                  className={`p-2.5 rounded-lg border text-start flex items-center justify-between transition-all ${
-                    exportPassMode === 'both' 
-                      ? 'bg-indigo-500/25 border-indigo-500/60 text-indigo-200' 
-                      : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
+                {/* Resolution & FPS */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block">{t.exportSettings}</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2.5 bg-white/5 border border-white/10 rounded-lg">
+                      <div className="text-[9px] uppercase tracking-widest text-gray-500 font-bold mb-1.5">{t.resolution}</div>
+                      <select value={exportRes} onChange={e => setExportRes(e.target.value as any)} className="w-full bg-transparent text-xs font-bold focus:outline-none" disabled={isExporting}>
+                        <option className="bg-[#1A1A1D]" value="720p">720p HD</option>
+                        <option className="bg-[#1A1A1D]" value="1080p">1080p (FHD)</option>
+                        <option className="bg-[#1A1A1D]" value="4k">4K (UHD)</option>
+                      </select>
+                    </div>
+                    <div className="p-2.5 bg-white/5 border border-white/10 rounded-lg">
+                      <div className="text-[9px] uppercase tracking-widest text-gray-500 font-bold mb-1.5">{t.fps}</div>
+                      <select value={exportFps} onChange={e => setExportFps(Number(e.target.value))} className="w-full bg-transparent text-xs font-bold focus:outline-none cursor-pointer" disabled={isExporting}>
+                        <option className="bg-[#1A1A1D]" value={12}>12 FPS ({lang === 'he' ? 'רטרו/סטופ-מושן' : 'Lo-Fi'})</option>
+                        <option className="bg-[#1A1A1D]" value={24}>24 FPS ({lang === 'he' ? 'קולנועי' : 'Cinema'})</option>
+                        <option className="bg-[#1A1A1D]" value={30}>30 FPS ({lang === 'he' ? 'רגיל' : 'Standard'})</option>
+                        <option className="bg-[#1A1A1D]" value={60}>60 FPS ({lang === 'he' ? 'חלק ומהיר' : 'Smooth'})</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Aspect Ratio */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block">{t.aspectRatio}</label>
+                  <div className="flex gap-2">
+                    <button onClick={() => setExportAr('16:9')} disabled={isExporting} className={`flex-1 py-2 text-[10px] rounded-lg font-bold transition-all ${exportAr === '16:9' ? 'bg-indigo-500/25 border border-indigo-500/60 text-indigo-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>16:9</button>
+                    <button onClick={() => setExportAr('9:16')} disabled={isExporting} className={`flex-1 py-2 text-[10px] rounded-lg font-bold transition-all ${exportAr === '9:16' ? 'bg-indigo-500/25 border border-indigo-500/60 text-indigo-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>9:16</button>
+                    <button onClick={() => setExportAr('1:1')} disabled={isExporting} className={`flex-1 py-2 text-[10px] rounded-lg font-bold transition-all ${exportAr === '1:1' ? 'bg-indigo-500/25 border border-indigo-500/60 text-indigo-300' : 'bg-white/5 border border-white/5 opacity-60 hover:opacity-100'}`}>1:1</button>
+                  </div>
+                </div>
+
+                {/* Color & B&W Matte Pass Mode */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold block">{t.exportPassMode}</label>
+                    <button
+                      onClick={() => setPreviewBW(!previewBW)}
+                      title={t.bwPreviewToggle}
+                      className={`text-[9px] px-2 py-0.5 rounded-md flex items-center gap-1 border transition-all ${
+                        previewBW 
+                          ? 'bg-white text-black border-white font-bold shadow-sm shadow-white/40' 
+                          : 'bg-white/5 text-gray-400 border-white/10 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      <Contrast size={11} />
+                      <span>{t.bwPreviewToggle}</span>
+                    </button>
+                  </div>
+                  
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      onClick={() => setExportPassMode('color')}
+                      disabled={isExporting}
+                      className={`p-2 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportPassMode === 'color' 
+                          ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold">{t.passColorOnly}</div>
+                        <div className="text-[8px] opacity-70">{lang === 'he' ? 'ייצוא רגיל בצבעים חיים' : 'Original vivid colors'}</div>
+                      </div>
+                      {exportPassMode === 'color' && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
+
+                    <button
+                      onClick={() => setExportPassMode('bw_matte')}
+                      disabled={isExporting}
+                      className={`p-2 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportPassMode === 'bw_matte' 
+                          ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold flex items-center gap-1.5">
+                          <Contrast size={12} className="text-white" />
+                          <span>{t.passBwOnly}</span>
+                        </div>
+                        <div className="text-[8px] opacity-70">{lang === 'he' ? 'אלמנטים בלבן טהור, רקע שחור מלא' : 'White on black matte for VJ'}</div>
+                      </div>
+                      {exportPassMode === 'bw_matte' && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />}
+                    </button>
+
+                    <button
+                      onClick={() => setExportPassMode('both')}
+                      disabled={isExporting}
+                      className={`p-2 rounded-lg border text-start flex items-center justify-between transition-all ${
+                        exportPassMode === 'both' 
+                          ? 'bg-indigo-500/25 border-indigo-500/60 text-indigo-200' 
+                          : 'bg-white/5 border-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-xs font-bold text-indigo-300">{t.passBoth}</div>
+                        <div className="text-[8px] opacity-70">{lang === 'he' ? 'מייצר 2 עותקים: צבע + עותק שחור-לבן' : 'Exports 2 copies: Color + B&W Copy'}</div>
+                      </div>
+                      {exportPassMode === 'both' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Video File Format in Advanced */}
+                {(exportTarget === 'video' || exportTarget === 'both') && (
                   <div>
-                    <div className="text-xs font-bold text-indigo-300">{t.passBoth}</div>
-                    <div className="text-[9px] opacity-70">{lang === 'he' ? 'מייצר 2 עותקים: צבע מקורי + עותק שחור-לבן' : 'Exports 2 copies: Full Color + B&W Copy'}</div>
+                    <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-2 block">{t.format}</label>
+                    <select value={exportFormat} onChange={e => setExportFormat(e.target.value as any)} className="w-full bg-[#1A1A1D] border border-white/10 p-2 rounded text-xs focus:outline-none focus:border-cyan-500 transition-colors" disabled={isExporting}>
+                      <option value="mp4">MP4 Video</option>
+                      <option value="webm">WebM (High Performance VP9)</option>
+                    </select>
                   </div>
-                  {exportPassMode === 'both' && <div className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />}
-                </button>
-              </div>
-
-              <p className="mt-2 text-[9px] text-gray-500 leading-tight">
-                {t.bwMatteHint}
-              </p>
-            </div>
-
-            {/* Video File Format (if video enabled) */}
-            {(exportTarget === 'video' || exportTarget === 'both') && (
-              <div>
-                <label className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mb-3 block">{t.format}</label>
-                <select value={exportFormat} onChange={e => setExportFormat(e.target.value as any)} className="w-full bg-[#1A1A1D] border border-white/10 p-2.5 rounded text-xs focus:outline-none focus:border-cyan-500 transition-colors" disabled={isExporting}>
-                  <option value="webm">WebM (High Performance VP9)</option>
-                  <option value="mp4">MP4 Video</option>
-                </select>
-                <p className="mt-2 text-[9px] text-gray-500 leading-tight">{t.supportedWarning}</p>
+                )}
               </div>
             )}
 
-            <div className="pt-4 border-t border-white/5 mt-auto">
-              <div className="flex items-center justify-between text-xs mb-6">
-                <span className="opacity-50">{t.time}</span>
-                <span className="font-mono text-cyan-400">{formatTime(duration)}</span>
+            {/* Bottom Export Action Area */}
+            <div className="pt-4 border-t border-white/10 mt-auto select-none">
+              <div className="flex items-center justify-between text-xs mb-3">
+                <span className="opacity-50 text-[11px]">{t.time}</span>
+                <span className="font-mono text-cyan-400 font-bold">{formatTime(duration)}</span>
               </div>
               
               <button 
                 onClick={startExport} 
                 disabled={!audioUrl || isExporting}
-                className={`w-full py-4 rounded-xl font-black text-xs sm:text-sm tracking-wider transition-all flex items-center justify-center gap-2 ${
+                className={`w-full py-3.5 rounded-xl font-black text-xs sm:text-sm tracking-wider transition-all flex items-center justify-center gap-2 ${
                   !audioUrl || isExporting 
                     ? 'bg-white/5 text-gray-500 cursor-not-allowed border border-white/10' 
                     : 'bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-600 text-white shadow-xl shadow-indigo-600/30 hover:brightness-110 active:scale-95'
@@ -2073,6 +2584,11 @@ ${exportPassModeRef.current === 'both'
               >
                 {isExporting ? (
                   <span>{t.exporting.toUpperCase()}</span>
+                ) : exportTab === 'standard' ? (
+                  <>
+                    <Film size={16} />
+                    <span>{lang === 'he' ? `ייצא וידאו (${exportRes} ${exportFormat.toUpperCase()})` : `SAVE VIDEO (${exportRes} ${exportFormat.toUpperCase()})`}</span>
+                  </>
                 ) : exportTarget === 'both' ? (
                   <>
                     <Film size={15} />
@@ -2143,6 +2659,18 @@ ${exportPassModeRef.current === 'both'
               <div className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
                 <span className="text-gray-300">{t.shortcutsMic}</span>
                 <kbd className="px-2 py-1 bg-white/10 rounded font-mono text-[10px] text-cyan-300">M</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                <span className="text-gray-300">{lang === 'he' ? 'קפיצה 5 שניות קדימה / אחורה' : 'Seek +/- 5 Seconds'}</span>
+                <kbd className="px-2 py-1 bg-white/10 rounded font-mono text-[10px] text-cyan-300">← / →</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                <span className="text-gray-300">{lang === 'he' ? 'חזרה להתחלה' : 'Restart from Beginning'}</span>
+                <kbd className="px-2 py-1 bg-white/10 rounded font-mono text-[10px] text-cyan-300">Home</kbd>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                <span className="text-gray-300">{lang === 'he' ? 'עדכון מהיר מ-GitHub' : 'Quick GitHub Update'}</span>
+                <kbd className="px-2 py-1 bg-white/10 rounded font-mono text-[10px] text-cyan-300">Y</kbd>
               </div>
             </div>
 

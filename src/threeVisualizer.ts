@@ -21,6 +21,32 @@ function getAvg(arr: Uint8Array, start = 0, end = arr.length) {
   return sum / (end - start);
 }
 
+export function cleanupThreeScene(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
+  try {
+    scene.traverse((object: any) => {
+      if (object.geometry) {
+        object.geometry.dispose();
+      }
+      if (object.material) {
+        if (Array.isArray(object.material)) {
+          object.material.forEach((mat: any) => {
+            if (mat.map) mat.map.dispose();
+            mat.dispose();
+          });
+        } else {
+          if (object.material.map) object.material.map.dispose();
+          object.material.dispose();
+        }
+      }
+    });
+    scene.clear();
+    renderer.dispose();
+    renderer.forceContextLoss?.();
+  } catch (err) {
+    console.warn('Three.js scene cleanup warning:', err);
+  }
+}
+
 // 1. Cyberpunk 3D Flight & Infinite Grid
 export function createCyberDiveScene(canvas: HTMLCanvasElement): ThreeSceneInstance {
   const scene = new THREE.Scene();
@@ -171,8 +197,7 @@ export function createCyberDiveScene(canvas: HTMLCanvasElement): ThreeSceneInsta
       camDistance = 120;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }
@@ -325,8 +350,7 @@ export function createGalaxyParticleScene(canvas: HTMLCanvasElement): ThreeScene
       camDistance = 180;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }
@@ -474,8 +498,7 @@ export function createMonolithArenaScene(canvas: HTMLCanvasElement): ThreeSceneI
       camDistance = 110;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }
@@ -629,8 +652,7 @@ export function createSynthwaveHorizonScene(canvas: HTMLCanvasElement): ThreeSce
       camDistance = 100;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }
@@ -769,8 +791,7 @@ export function createHyperdriveTunnelScene(canvas: HTMLCanvasElement): ThreeSce
       lookOffsetY = 0;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }
@@ -930,8 +951,7 @@ export function createLiquidBlobScene(canvas: HTMLCanvasElement): ThreeSceneInst
       camDistance = 90;
     },
     destroy: () => {
-      renderer.dispose();
-      scene.clear();
+      cleanupThreeScene(scene, renderer);
     }
   };
 }

@@ -29,6 +29,7 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private sourceNode: MediaElementAudioSourceNode | MediaStreamAudioSourceNode | null = null;
+  private micSourceNode: MediaStreamAudioSourceNode | null = null;
   private micStream: MediaStream | null = null;
   
   // FX Nodes
@@ -129,8 +130,8 @@ export class AudioEngine {
         this.timeData = new Uint8Array(this.analyser.frequencyBinCount);
       }
 
-      const micSource = ctx.createMediaStreamSource(stream);
-      micSource.connect(this.analyser);
+      this.micSourceNode = ctx.createMediaStreamSource(stream);
+      this.micSourceNode.connect(this.analyser);
       // Note: do not connect mic to ctx.destination to avoid feedback squeal
       return true;
     } catch (err) {
@@ -140,6 +141,12 @@ export class AudioEngine {
   }
 
   public disableMicrophone() {
+    if (this.micSourceNode) {
+      try {
+        this.micSourceNode.disconnect();
+      } catch (e) {}
+      this.micSourceNode = null;
+    }
     if (this.micStream) {
       this.micStream.getTracks().forEach(t => t.stop());
       this.micStream = null;
