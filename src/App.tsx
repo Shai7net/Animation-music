@@ -450,11 +450,11 @@ export default function App() {
       const frameStartTime = performance.now();
       const isLive = isExportingRef.current || isPlayingRef.current || isMicActive;
       
-      // Telemetry: measure live FPS and GPU frame time
+      // Telemetry: measure live FPS and GPU frame time (throttled when live, no re-render thrash when idle)
       frameCountRef.current++;
       const nowMs = performance.now();
       const elapsedFps = nowMs - lastFpsTimestampRef.current;
-      if (elapsedFps >= 500) {
+      if (isLive && elapsedFps >= 1000) {
         const fps = Math.round((frameCountRef.current * 1000) / elapsedFps);
         setLiveFps(fps);
         setRenderTimeMs(parseFloat((nowMs - frameStartTime).toFixed(1)));
@@ -463,8 +463,30 @@ export default function App() {
       }
       
       const dsp = isLive ? audioEngineRef.current.analyze() : {
-        beat: { isBeat: false, isDrop: false, bpm: 0, beatIntensity: 0, timeSinceLastBeat: 0 },
-        bands: { subBass: 0, bass: 0, lowMid: 0, mid: 0, highMid: 0, treble: 0, brilliance: 0, overallEnergy: 0 }
+        beat: {
+          isBeat: false,
+          isDrop: false,
+          bpm: 128,
+          beatIntensity: 0,
+          timeSinceLastBeat: 0,
+          vuLevel: 0,
+          currentDb: -90
+        },
+        bands: {
+          subBass: 0,
+          bass: 0,
+          lowMid: 0,
+          mid: 0,
+          highMid: 0,
+          treble: 0,
+          brilliance: 0,
+          overallEnergy: 0,
+          rmsDb: -90,
+          peakDb: -90,
+          gatedEnergy: 0,
+          isSilent: true,
+          perceivedLoudness: 0
+        }
       };
 
       if (isLive) {
@@ -1927,7 +1949,7 @@ ${exportPassModeRef.current === 'both'
               if (activeItem.engine === 'three') threeInstanceRef.current?.handleWheel(e.nativeEvent);
             }}
             style={previewBW ? { filter: 'grayscale(100%) contrast(5000%) brightness(300%)' } : undefined}
-            className={`flex-1 flex items-center justify-center overflow-hidden relative transition-all duration-300 ${
+            className={`flex-1 flex items-center justify-center overflow-hidden relative ${
               activeItem.engine === 'three' ? 'cursor-grab active:cursor-grabbing' : ''
             }`}
           >

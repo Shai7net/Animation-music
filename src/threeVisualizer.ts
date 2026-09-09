@@ -1,3 +1,4 @@
+import './utils/webglPolyfill';
 import * as THREE from 'three';
 
 export interface ThreeSceneInstance {
@@ -55,10 +56,29 @@ export function getAspect(canvas: HTMLCanvasElement): number {
 export function initSceneRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
   const w = canvas.width || 1280;
   const h = canvas.height || 720;
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(w, h, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  return renderer;
+  try {
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance'
+    });
+    renderer.setSize(w, h, false);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    return renderer;
+  } catch (e1) {
+    console.warn('Standard WebGLRenderer failed, trying safe fallback:', e1);
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: false,
+      precision: 'mediump',
+      preserveDrawingBuffer: true,
+      powerPreference: 'default'
+    });
+    renderer.setSize(w, h, false);
+    renderer.setPixelRatio(1);
+    return renderer;
+  }
 }
 
 // 1. Cyberpunk 3D Flight & Infinite Grid
